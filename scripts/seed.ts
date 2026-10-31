@@ -12,6 +12,7 @@ import {
   QuestionType,
   TeamMemberRole,
 } from "../app/db/schema";
+import { calculatePppPrice } from "../app/lib/ppp";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1603,6 +1604,8 @@ You've completed the Building REST APIs course. You now have the skills to build
       userId: students[0].id, // Emma — bought course 1 individually
       courseId: course1.id,
       amountPaid: 4999,
+      listPrice: 4999,
+      quantity: 1,
       country: "US",
       createdAt: daysAgo(50),
     })
@@ -1614,6 +1617,8 @@ You've completed the Building REST APIs course. You now have the skills to build
       userId: students[0].id, // Emma — bought course 2 individually
       courseId: course2.id,
       amountPaid: 5999,
+      listPrice: 5999,
+      quantity: 1,
       country: "US",
       createdAt: daysAgo(40),
     })
@@ -1624,6 +1629,8 @@ You've completed the Building REST APIs course. You now have the skills to build
       userId: students[1].id, // James — bought course 1 with PPP discount (India)
       courseId: course1.id,
       amountPaid: 2500,
+      listPrice: 4999,
+      quantity: 1,
       country: "IN",
       createdAt: daysAgo(45),
     })
@@ -1634,6 +1641,8 @@ You've completed the Building REST APIs course. You now have the skills to build
       userId: students[2].id, // Olivia — bought course 1 individually
       courseId: course1.id,
       amountPaid: 4999,
+      listPrice: 4999,
+      quantity: 1,
       country: "US",
       createdAt: daysAgo(35),
     })
@@ -1644,6 +1653,8 @@ You've completed the Building REST APIs course. You now have the skills to build
       userId: students[4].id, // Sophia — bought course 1 individually
       courseId: course1.id,
       amountPaid: 4999,
+      listPrice: 4999,
+      quantity: 1,
       country: "US",
       createdAt: daysAgo(15),
     })
@@ -1676,6 +1687,8 @@ You've completed the Building REST APIs course. You now have the skills to build
       userId: bossy.id,
       courseId: course2.id,
       amountPaid: 5999 * 5,
+      listPrice: 5999,
+      quantity: 5,
       country: "US",
       createdAt: daysAgo(30),
     })
@@ -1728,16 +1741,375 @@ You've completed the Building REST APIs course. You now have the skills to build
     `Created 1 team with Bossy McBossface as admin, 1 team purchase, and ${seededCoupons.length} coupons (2 redeemed, 3 available).`
   );
 
+  // ─── Analytics Demo Data ───
+  // Extra students, individual and team purchases spread over ~90 days across
+  // PPP tiers, lesson progress with realistic drop-off, and quiz attempts, so the
+  // instructor analytics dashboard has something to show. A seeded PRNG keeps
+  // the output identical on every run.
+
+  const rand = mulberry32(20261031);
+  const randInt = (min: number, max: number) =>
+    min + Math.floor(rand() * (max - min + 1));
+  const pick = <T>(items: readonly T[]): T =>
+    items[Math.floor(rand() * items.length)];
+
+  // Weighted so most buyers are full price, with a long tail of discounted tiers
+  const buyerCountries = [
+    ...["US", "US", "US", "US", "GB", "GB", "CA", "DE", "AU", "FR", "NL", "JP"], // tier 1
+    ...["BR", "BR", "MX", "PL", "TR"], // tier 2
+    ...["IN", "IN", "IN", "CO", "AR", "PH", "ZA"], // tier 3
+    ...["NG", "PK", "EG", "KE"], // tier 4
+  ] as const;
+
+  const firstNames = [
+    "Ava",
+    "Noah",
+    "Mia",
+    "Lucas",
+    "Zoe",
+    "Ethan",
+    "Chloe",
+    "Mateo",
+    "Aria",
+    "Leo",
+    "Nora",
+    "Kai",
+    "Isla",
+    "Omar",
+    "Priya",
+    "Diego",
+    "Yuki",
+    "Amara",
+    "Felix",
+    "Hana",
+    "Ravi",
+    "Lena",
+    "Tariq",
+    "Sofia",
+    "Jonas",
+    "Ines",
+  ];
+  const lastNames = [
+    "Garcia",
+    "Nguyen",
+    "Patel",
+    "Kim",
+    "Okafor",
+    "Silva",
+    "Müller",
+    "Rossi",
+    "Kowalski",
+    "Haddad",
+    "Tanaka",
+    "Mensah",
+    "Novak",
+    "Reyes",
+    "Singh",
+    "Ahmed",
+    "Larsen",
+    "Dubois",
+  ];
+
+  let demoUserCount = 0;
+  function createDemoStudent(joinedDaysAgo: number) {
+    demoUserCount++;
+    const first = pick(firstNames);
+    const last = pick(lastNames);
+    const [user] = db
+      .insert(schema.users)
+      .values({
+        name: `${first} ${last}`,
+        email: `${slugify(`${first}.${last}`)}.${demoUserCount}@student.dev`,
+        role: UserRole.Student,
+        avatarUrl: `https://api.dicebear.com/9.x/avataaars/svg?seed=demo${demoUserCount}`,
+        createdAt: daysAgo(joinedDaysAgo),
+      })
+      .returning()
+      .all();
+    return user;
+  }
+
+  type QuizSeed = {
+    id: number;
+    optionIds: { questionId: number; optionId: number; correct: boolean }[];
+    passRate: number;
+  };
+
+  type CourseSeed = {
+    id: number;
+    price: number;
+    lessonIds: number[];
+    // Index of the lesson where many students give up
+    steepDropIndex: number;
+    quizzesByLessonId: Map<number, QuizSeed>;
+  };
+
+  const demoCourses: CourseSeed[] = [
+    {
+      id: course1.id,
+      price: course1.price,
+      lessonIds: course1LessonIds,
+      // "Function Types" (module 3, lesson 1), just before the hard generics quiz
+      steepDropIndex: 7,
+      quizzesByLessonId: new Map([
+        [
+          course1LessonIds[2],
+          { id: quiz1.id, optionIds: quiz1OptionIds, passRate: 0.8 },
+        ],
+        [
+          course1LessonIds[7],
+          { id: quiz2.id, optionIds: quiz2OptionIds, passRate: 0.6 },
+        ],
+      ]),
+    },
+    {
+      id: course2.id,
+      price: course2.price,
+      lessonIds: course2LessonIds,
+      steepDropIndex: 12,
+      quizzesByLessonId: new Map([
+        [
+          course2LessonIds[2],
+          { id: quiz3.id, optionIds: quiz3OptionIds, passRate: 0.75 },
+        ],
+      ]),
+    },
+  ];
+
+  // Enrolls a student and walks them through the course until they drop off.
+  // Each lesson is completed with high probability, except the steep-drop lesson.
+  // Students can't progress faster than about one lesson per day since enrolling.
+  function enrollWithProgress(
+    userId: number,
+    course: CourseSeed,
+    enrolledDaysAgo: number
+  ) {
+    const maxLessons = Math.min(course.lessonIds.length, enrolledDaysAgo + 1);
+    let completed = 0;
+    let lastCompletedDay = enrolledDaysAgo;
+
+    for (let i = 0; i < maxLessons; i++) {
+      const lessonId = course.lessonIds[i];
+      const day = Math.max(
+        0,
+        enrolledDaysAgo -
+          Math.ceil(((i + 1) * enrolledDaysAgo) / (maxLessons + 2))
+      );
+
+      const quiz = course.quizzesByLessonId.get(lessonId);
+      let quizPassed = true;
+      if (quiz) {
+        quizPassed = rand() < quiz.passRate;
+        recordQuizAttempt(
+          userId,
+          quiz.id,
+          quiz.optionIds,
+          quizPassed ? allCorrect(quiz) : [0],
+          day
+        );
+      }
+
+      const continueChance = i === course.steepDropIndex ? 0.55 : 0.93;
+      if (!quizPassed || rand() >= continueChance) {
+        // Reached this lesson but stopped here
+        markInProgress(userId, lessonId);
+        break;
+      }
+
+      markComplete(userId, lessonId, day);
+      completed++;
+      lastCompletedDay = day;
+    }
+
+    const finished = completed === course.lessonIds.length;
+    db.insert(schema.enrollments)
+      .values({
+        userId,
+        courseId: course.id,
+        enrolledAt: daysAgo(enrolledDaysAgo),
+        completedAt: finished ? daysAgo(lastCompletedDay) : null,
+      })
+      .run();
+  }
+
+  function allCorrect(quiz: QuizSeed) {
+    const questionCount = new Set(quiz.optionIds.map((o) => o.questionId)).size;
+    return Array.from({ length: questionCount }, (_, i) => i);
+  }
+
+  // Individual purchases: ~30 new buyers per course, a few buying both
+  let demoIndividualPurchases = 0;
+  for (const course of demoCourses) {
+    for (let n = 0; n < 30; n++) {
+      const purchasedDaysAgo = randInt(0, 89);
+      const country = pick(buyerCountries);
+      const student = createDemoStudent(purchasedDaysAgo + randInt(0, 10));
+
+      const buy = (c: CourseSeed, dayAgo: number) => {
+        db.insert(schema.purchases)
+          .values({
+            userId: student.id,
+            courseId: c.id,
+            amountPaid: calculatePppPrice(c.price, country),
+            listPrice: c.price,
+            quantity: 1,
+            country,
+            createdAt: daysAgo(dayAgo),
+          })
+          .run();
+        enrollWithProgress(student.id, c, dayAgo);
+        demoIndividualPurchases++;
+      };
+
+      buy(course, purchasedDaysAgo);
+      if (rand() < 0.15) {
+        const other = demoCourses.find((c) => c.id !== course.id)!;
+        buy(other, randInt(0, purchasedDaysAgo));
+      }
+    }
+  }
+
+  // Team purchases: one buyer per team, some seats redeemed by new students
+  const demoTeamPurchases = [
+    {
+      course: demoCourses[0],
+      daysAgo: 82,
+      seats: 8,
+      country: "US",
+      redeemed: 6,
+    },
+    {
+      course: demoCourses[0],
+      daysAgo: 41,
+      seats: 4,
+      country: "BR",
+      redeemed: 3,
+    },
+    {
+      course: demoCourses[0],
+      daysAgo: 9,
+      seats: 10,
+      country: "IN",
+      redeemed: 4,
+    },
+    {
+      course: demoCourses[1],
+      daysAgo: 67,
+      seats: 6,
+      country: "DE",
+      redeemed: 5,
+    },
+    {
+      course: demoCourses[1],
+      daysAgo: 20,
+      seats: 3,
+      country: "NG",
+      redeemed: 2,
+    },
+    {
+      course: demoCourses[1],
+      daysAgo: 4,
+      seats: 12,
+      country: "GB",
+      redeemed: 3,
+    },
+  ];
+
+  let demoCoupons = 0;
+  for (const tp of demoTeamPurchases) {
+    const buyer = createDemoStudent(tp.daysAgo + 5);
+    const [team] = db
+      .insert(schema.teams)
+      .values({ createdAt: daysAgo(tp.daysAgo) })
+      .returning()
+      .all();
+    db.insert(schema.teamMembers)
+      .values({
+        teamId: team.id,
+        userId: buyer.id,
+        role: TeamMemberRole.Admin,
+        createdAt: daysAgo(tp.daysAgo),
+      })
+      .run();
+
+    const [purchase] = db
+      .insert(schema.purchases)
+      .values({
+        userId: buyer.id,
+        courseId: tp.course.id,
+        amountPaid: calculatePppPrice(tp.course.price, tp.country) * tp.seats,
+        listPrice: tp.course.price,
+        quantity: tp.seats,
+        country: tp.country,
+        createdAt: daysAgo(tp.daysAgo),
+      })
+      .returning()
+      .all();
+
+    for (let s = 0; s < tp.seats; s++) {
+      demoCoupons++;
+      const redeemer =
+        s < tp.redeemed ? createDemoStudent(tp.daysAgo + randInt(0, 5)) : null;
+      const redeemedDaysAgo = redeemer
+        ? Math.max(0, tp.daysAgo - randInt(0, 5))
+        : null;
+
+      db.insert(schema.coupons)
+        .values({
+          teamId: team.id,
+          courseId: tp.course.id,
+          code: `TEAM-DEMO-${String(demoCoupons).padStart(4, "0")}`,
+          purchaseId: purchase.id,
+          redeemedByUserId: redeemer?.id ?? null,
+          redeemedAt:
+            redeemedDaysAgo === null ? null : daysAgo(redeemedDaysAgo),
+          createdAt: daysAgo(tp.daysAgo),
+        })
+        .run();
+
+      if (redeemer && redeemedDaysAgo !== null) {
+        enrollWithProgress(redeemer.id, tp.course, redeemedDaysAgo);
+      }
+    }
+  }
+
+  console.log(
+    `Created analytics demo data: ${demoUserCount} students, ${demoIndividualPurchases} individual purchases, ${demoTeamPurchases.length} team purchases (${demoCoupons} seats).`
+  );
+
+  const count = (table: string) =>
+    (
+      sqlite.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as {
+        n: number;
+      }
+    ).n;
+
   console.log("\n✓ Seed complete!");
-  console.log("  Users: 9 (1 admin, 2 instructors, 6 students)");
+  console.log(`  Users: ${count("users")}`);
   console.log("  Categories: 5");
   console.log(
     `  Courses: 2 (${course1LessonIds.length} + ${course2LessonIds.length} lessons)`
   );
   console.log("  Quizzes: 3");
-  console.log("  Enrollments: 7");
-  console.log("  Purchases: 6 (5 individual + 1 team)");
-  console.log("  Teams: 1 (with 5 coupons)");
+  console.log(`  Quiz attempts: ${count("quiz_attempts")}`);
+  console.log(`  Enrollments: ${count("enrollments")}`);
+  console.log(`  Lesson progress: ${count("lesson_progress")}`);
+  console.log(
+    `  Purchases: ${count("purchases")} (${count("purchases WHERE id NOT IN (SELECT purchase_id FROM coupons)")} individual + ${count("purchases WHERE id IN (SELECT purchase_id FROM coupons)")} team)`
+  );
+  console.log(`  Teams: ${count("teams")} (with ${count("coupons")} coupons)`);
+}
+
+// Small deterministic PRNG so the seed produces the same data on every run
+function mulberry32(seed: number) {
+  let a = seed;
+  return () => {
+    a |= 0;
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
 }
 
 seed().catch(console.error);

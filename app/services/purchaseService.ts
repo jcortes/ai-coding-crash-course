@@ -12,11 +12,13 @@ export function createPurchase(
   userId: number,
   courseId: number,
   amountPaid: number,
-  country: string | null
+  country: string | null,
+  listPrice: number,
+  quantity = 1
 ) {
   return db
     .insert(purchases)
-    .values({ userId, courseId, amountPaid, country })
+    .values({ userId, courseId, amountPaid, country, listPrice, quantity })
     .returning()
     .get();
 }
@@ -48,9 +50,17 @@ export function createTeamPurchase(
   courseId: number,
   amountPaid: number,
   country: string | null,
+  listPrice: number,
   quantity: number
 ) {
-  const purchase = createPurchase(userId, courseId, amountPaid, country);
+  const purchase = createPurchase(
+    userId,
+    courseId,
+    amountPaid,
+    country,
+    listPrice,
+    quantity
+  );
   const team = getOrCreateTeamForUser(userId);
   const coupons = generateCoupons(team.id, courseId, purchase.id, quantity);
   return { purchase, team, coupons };
