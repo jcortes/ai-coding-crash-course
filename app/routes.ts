@@ -55,4 +55,8 @@ export default [
   route("api/logout", "routes/api.logout.ts"),
   route("api/video-tracking", "routes/api.video-tracking.ts"),
   route("api/set-dev-country", "routes/api.set-dev-country.ts"),
+  route(
+    ".well-known/appspecific/com.chrome.devtools.json",
+    "routes/well-known.chrome-devtools.ts"
+  ),
 ] satisfies RouteConfig;
