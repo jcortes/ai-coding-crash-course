@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi } from "vitest";
 import { createTestDb, seedBaseData } from "~/test/setup";
 import * as schema from "~/db/schema";
+import { generateCoupons } from "./couponService";
 
 let testDb: ReturnType<typeof createTestDb>;
 let base: ReturnType<typeof seedBaseData>;
@@ -13,6 +14,10 @@ vi.mock("~/db", () => ({
 
 import {
   getInstructorOverview,
+  getEnrollmentSeries,
+  getRevenueByCountry,
+  getRevenueSeries,
+  getRevenueSplit,
   parseAnalyticsRange,
   resolveAnalyticsInstructor,
 } from "./instructorAnalyticsService";
@@ -48,6 +53,7 @@ function addPurchase(opts: {
   createdAt: string;
   quantity?: number;
   listPrice?: number;
+  country?: string | null;
 }) {
   const buyer = createStudent();
   return testDb
@@ -58,11 +64,24 @@ function addPurchase(opts: {
       amountPaid: opts.amountPaid,
       listPrice: opts.listPrice ?? opts.amountPaid,
       quantity: opts.quantity ?? 1,
-      country: "US",
+      country: opts.country === undefined ? "US" : opts.country,
       createdAt: opts.createdAt,
     })
     .returning()
     .get();
+}
+
+// A team purchase: the purchase plus one coupon per seat.
+function addTeamPurchase(opts: {
+  courseId?: number;
+  amountPaid: number;
+  quantity: number;
+  createdAt: string;
+}) {
+  const purchase = addPurchase(opts);
+  const team = testDb.insert(schema.teams).values({}).returning().get();
+  generateCoupons(team.id, purchase.courseId, purchase.id, opts.quantity);
+  return purchase;
 }
 
 function addEnrollment(opts: { courseId?: number; enrolledAt: string }) {
@@ -227,6 +246,186 @@ describe("instructorAnalyticsService", () => {
       const overview = getInstructorOverview(base.instructor.id, "7d", NOW);
 
       expect(overview.previous?.revenue).toBe(1000);
+    });
+  });
+
+  describe("getRevenueSeries", () => {
+    it("buckets revenue by day for 7d, filling empty days with zero", () => {
+      addPurchase({ amountPaid: 1000, createdAt: "2026-06-30T08:00:00.000Z" });
+      addPurchase({ amountPaid: 500, createdAt: "2026-06-30T01:00:00.000Z" });
+      addPurchase({ amountPaid: 2000, createdAt: "2026-06-25T23:59:00.000Z" });
+      addPurchase({ amountPaid: 9999, createdAt: "2026-06-20T10:00:00.000Z" });
+
+      const series = getRevenueSeries(base.instructor.id, "7d", null, NOW);
+
+      expect(series.bucketSize).toBe("day");
+      expect(series.points).toEqual([
+        { bucket: "2026-06-23", revenue: 0, sales: 0 },
+        { bucket: "2026-06-24", revenue: 0, sales: 0 },
+        { bucket: "2026-06-25", revenue: 2000, sales: 1 },
+        { bucket: "2026-06-26", revenue: 0, sales: 0 },
+        { bucket: "2026-06-27", revenue: 0, sales: 0 },
+        { bucket: "2026-06-28", revenue: 0, sales: 0 },
+        { bucket: "2026-06-29", revenue: 0, sales: 0 },
+        { bucket: "2026-06-30", revenue: 1500, sales: 2 },
+      ]);
+    });
+
+    it("buckets revenue by Monday-start week for 90d", () => {
+      // NOW is Tuesday 2026-06-30; 90 days back is Wednesday 2026-04-01.
+      addPurchase({ amountPaid: 100, createdAt: "2026-04-02T10:00:00.000Z" });
+      addPurchase({ amountPaid: 200, createdAt: "2026-06-28T23:00:00.000Z" }); // Sunday
+      addPurchase({ amountPaid: 400, createdAt: "2026-06-29T00:30:00.000Z" }); // Monday
+      addPurchase({ amountPaid: 800, createdAt: "2026-03-31T10:00:00.000Z" }); // outside range
+
+      const series = getRevenueSeries(base.instructor.id, "90d", null, NOW);
+
+      expect(series.bucketSize).toBe("week");
+      expect(series.points).toHaveLength(14);
+      expect(series.points[0]).toEqual({ bucket: "2026-03-30", revenue: 100, sales: 1 });
+      expect(series.points[1]).toEqual({ bucket: "2026-04-06", revenue: 0, sales: 0 });
+      expect(series.points.at(-2)).toEqual({ bucket: "2026-06-22", revenue: 200, sales: 1 });
+      expect(series.points.at(-1)).toEqual({ bucket: "2026-06-29", revenue: 400, sales: 1 });
+    });
+
+    it("buckets revenue by month for all time, from the first sale to now", () => {
+      addPurchase({ amountPaid: 100, createdAt: "2025-11-15T10:00:00.000Z" });
+      addPurchase({ amountPaid: 200, createdAt: "2026-02-03T10:00:00.000Z" });
+      addPurchase({ amountPaid: 300, createdAt: "2026-02-28T23:59:00.000Z" });
+
+      const series = getRevenueSeries(base.instructor.id, "all", null, NOW);
+
+      expect(series.bucketSize).toBe("month");
+      expect(series.points).toEqual([
+        { bucket: "2025-11-01", revenue: 100, sales: 1 },
+        { bucket: "2025-12-01", revenue: 0, sales: 0 },
+        { bucket: "2026-01-01", revenue: 0, sales: 0 },
+        { bucket: "2026-02-01", revenue: 500, sales: 2 },
+        { bucket: "2026-03-01", revenue: 0, sales: 0 },
+        { bucket: "2026-04-01", revenue: 0, sales: 0 },
+        { bucket: "2026-05-01", revenue: 0, sales: 0 },
+        { bucket: "2026-06-01", revenue: 0, sales: 0 },
+      ]);
+    });
+
+    it("shows only the current month for all time when there are no sales", () => {
+      const series = getRevenueSeries(base.instructor.id, "all", null, NOW);
+
+      expect(series.points).toEqual([
+        { bucket: "2026-06-01", revenue: 0, sales: 0 },
+      ]);
+    });
+  });
+
+  describe("getEnrollmentSeries", () => {
+    it("buckets new enrollments by enrollment date with zero-filled days", () => {
+      addEnrollment({ enrolledAt: "2026-06-30T09:00:00.000Z" });
+      addEnrollment({ enrolledAt: "2026-06-01T13:00:00.000Z" });
+      addEnrollment({ enrolledAt: "2026-06-01T15:00:00.000Z" });
+      addEnrollment({ enrolledAt: "2026-05-31T11:59:00.000Z" }); // just outside 30d
+
+      const series = getEnrollmentSeries(base.instructor.id, "30d", null, NOW);
+
+      expect(series.bucketSize).toBe("day");
+      expect(series.points).toHaveLength(31);
+      expect(series.points[0]).toEqual({ bucket: "2026-05-31", enrollments: 0 });
+      expect(series.points[1]).toEqual({ bucket: "2026-06-01", enrollments: 2 });
+      expect(series.points[2]).toEqual({ bucket: "2026-06-02", enrollments: 0 });
+      expect(series.points.at(-1)).toEqual({ bucket: "2026-06-30", enrollments: 1 });
+    });
+  });
+
+  describe("getRevenueByCountry", () => {
+    it("reports revenue, sales, PPP tier and discount given per country", () => {
+      addPurchase({ country: "US", listPrice: 10000, amountPaid: 10000, createdAt: daysAgo(1) });
+      addPurchase({ country: "IN", listPrice: 10000, amountPaid: 5000, createdAt: daysAgo(2) });
+      addPurchase({ country: "IN", listPrice: 8000, amountPaid: 4000, createdAt: daysAgo(3) });
+      addPurchase({ country: "IN", listPrice: 10000, amountPaid: 5000, createdAt: daysAgo(40) });
+      // Team of 3 seats in Brazil (tier 2, 30% off): 3 x 10000 list, 21000 paid.
+      addPurchase({ country: "BR", listPrice: 10000, amountPaid: 21000, quantity: 3, createdAt: daysAgo(4) });
+
+      const rows = getRevenueByCountry(base.instructor.id, "30d", null, NOW);
+
+      expect(rows).toEqual([
+        { country: "BR", tier: 2, tierLabel: "30% off", revenue: 21000, sales: 1, discount: 9000 },
+        { country: "US", tier: 1, tierLabel: "Full Price", revenue: 10000, sales: 1, discount: 0 },
+        { country: "IN", tier: 3, tierLabel: "50% off", revenue: 9000, sales: 2, discount: 9000 },
+      ]);
+    });
+
+    it("groups purchases with no recorded country at full-price tier", () => {
+      addPurchase({ country: null, listPrice: 5000, amountPaid: 5000, createdAt: daysAgo(1) });
+
+      expect(getRevenueByCountry(base.instructor.id, "30d", null, NOW)).toEqual([
+        { country: null, tier: 1, tierLabel: "Full Price", revenue: 5000, sales: 1, discount: 0 },
+      ]);
+    });
+  });
+
+  describe("getRevenueSplit", () => {
+    it("splits revenue between individual and team purchases", () => {
+      addPurchase({ amountPaid: 4000, createdAt: daysAgo(1) });
+      addPurchase({ amountPaid: 3000, createdAt: daysAgo(2) });
+      addTeamPurchase({ amountPaid: 25000, quantity: 5, createdAt: daysAgo(3) });
+      // A single-seat team purchase is still a team purchase.
+      addTeamPurchase({ amountPaid: 6000, quantity: 1, createdAt: daysAgo(4) });
+      addTeamPurchase({ amountPaid: 99999, quantity: 2, createdAt: daysAgo(60) });
+
+      const split = getRevenueSplit(base.instructor.id, "30d", null, NOW);
+
+      expect(split).toEqual({
+        individual: { revenue: 7000, sales: 2, seats: 2 },
+        team: { revenue: 31000, sales: 2, seats: 6 },
+      });
+      expect(split.individual.revenue + split.team.revenue).toBe(
+        getInstructorOverview(base.instructor.id, "30d", NOW).current.revenue
+      );
+    });
+  });
+
+  describe("course filtering", () => {
+    it("restricts both series to the given course", () => {
+      const other = createCourse(schema.CourseStatus.Published);
+      addPurchase({ amountPaid: 1000, createdAt: daysAgo(1) });
+      addPurchase({ courseId: other.id, amountPaid: 7000, createdAt: daysAgo(1) });
+      addEnrollment({ enrolledAt: daysAgo(1) });
+      addEnrollment({ courseId: other.id, enrolledAt: daysAgo(1) });
+      addEnrollment({ courseId: other.id, enrolledAt: daysAgo(1) });
+
+      const total = (points: { revenue: number }[]) =>
+        points.reduce((sum, p) => sum + p.revenue, 0);
+      const enrolled = (points: { enrollments: number }[]) =>
+        points.reduce((sum, p) => sum + p.enrollments, 0);
+
+      expect(total(getRevenueSeries(base.instructor.id, "7d", null, NOW).points)).toBe(8000);
+      expect(total(getRevenueSeries(base.instructor.id, "7d", other.id, NOW).points)).toBe(7000);
+      expect(enrolled(getEnrollmentSeries(base.instructor.id, "7d", null, NOW).points)).toBe(3);
+      expect(enrolled(getEnrollmentSeries(base.instructor.id, "7d", other.id, NOW).points)).toBe(2);
+    });
+
+    it("restricts the country breakdown and team split to the given course", () => {
+      const other = createCourse(schema.CourseStatus.Published);
+      addPurchase({ country: "US", amountPaid: 1000, createdAt: daysAgo(1) });
+      addPurchase({ courseId: other.id, country: "IN", listPrice: 4000, amountPaid: 2000, createdAt: daysAgo(1) });
+      addTeamPurchase({ courseId: other.id, amountPaid: 9000, quantity: 3, createdAt: daysAgo(1) });
+
+      expect(getRevenueByCountry(base.instructor.id, "7d", base.course.id, NOW)).toEqual([
+        { country: "US", tier: 1, tierLabel: "Full Price", revenue: 1000, sales: 1, discount: 0 },
+      ]);
+      expect(getRevenueSplit(base.instructor.id, "7d", other.id, NOW)).toEqual({
+        individual: { revenue: 2000, sales: 1, seats: 1 },
+        team: { revenue: 9000, sales: 1, seats: 3 },
+      });
+    });
+
+    it("returns nothing for a course the instructor does not own", () => {
+      const stranger = createUser(schema.UserRole.Instructor);
+      const theirs = createCourse(schema.CourseStatus.Published, stranger.id);
+      addPurchase({ courseId: theirs.id, amountPaid: 7000, createdAt: daysAgo(1) });
+
+      const points = getRevenueSeries(base.instructor.id, "7d", theirs.id, NOW).points;
+
+      expect(points.every((p) => p.revenue === 0)).toBe(true);
     });
   });
 

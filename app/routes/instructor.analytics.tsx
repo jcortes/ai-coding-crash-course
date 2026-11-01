@@ -3,12 +3,22 @@ import type { Route } from "./+types/instructor.analytics";
 import { getCurrentUserId } from "~/lib/session";
 import {
   ANALYTICS_RANGES,
+  getEnrollmentSeries,
   getInstructorOverview,
+  getRevenueByCountry,
+  getRevenueSeries,
+  getRevenueSplit,
   parseAnalyticsRange,
   resolveAnalyticsInstructor,
   type AnalyticsRange,
 } from "~/services/instructorAnalyticsService";
 import { StatCard, formatCount, formatRevenue } from "~/components/analytics";
+import {
+  EnrollmentChart,
+  RevenueByCountryTable,
+  RevenueChart,
+  RevenueSplitCard,
+} from "~/components/analytics-charts";
 import { Button } from "~/components/ui/button";
 import { Card } from "~/components/ui/card";
 import { Skeleton } from "~/components/ui/skeleton";
@@ -42,10 +52,15 @@ export async function loader({ request }: Route.LoaderArgs) {
   const range = parseAnalyticsRange(url.searchParams.get("range"));
   const requestedParam = url.searchParams.get("instructorId");
   const requestedInstructorId =
-    requestedParam && /^\d+$/.test(requestedParam) ? Number(requestedParam) : null;
+    requestedParam && /^\d+$/.test(requestedParam)
+      ? Number(requestedParam)
+      : null;
 
   const currentUserId = await getCurrentUserId(request);
-  const access = resolveAnalyticsInstructor(currentUserId, requestedInstructorId);
+  const access = resolveAnalyticsInstructor(
+    currentUserId,
+    requestedInstructorId
+  );
 
   if (!access.ok) {
     switch (access.reason) {
@@ -74,6 +89,10 @@ export async function loader({ request }: Route.LoaderArgs) {
   return {
     range,
     overview,
+    revenueSeries: getRevenueSeries(instructor.id, range),
+    enrollmentSeries: getEnrollmentSeries(instructor.id, range),
+    revenueByCountry: getRevenueByCountry(instructor.id, range),
+    revenueSplit: getRevenueSplit(instructor.id, range),
     instructor,
     // Only carried in links when an admin is viewing someone else.
     instructorIdParam: isViewingOther ? instructor.id : null,
@@ -90,6 +109,10 @@ export function HydrateFallback() {
           <Skeleton key={i} className="h-32" />
         ))}
       </div>
+      <div className="mt-6 grid gap-4 lg:grid-cols-2">
+        <Skeleton className="h-80" />
+        <Skeleton className="h-80" />
+      </div>
     </div>
   );
 }
@@ -97,7 +120,16 @@ export function HydrateFallback() {
 export default function InstructorAnalytics({
   loaderData,
 }: Route.ComponentProps) {
-  const { range, overview, instructor, instructorIdParam } = loaderData;
+  const {
+    range,
+    overview,
+    revenueSeries,
+    enrollmentSeries,
+    revenueByCountry,
+    revenueSplit,
+    instructor,
+    instructorIdParam,
+  } = loaderData;
   const { current, previous } = overview;
 
   function rangeHref(r: AnalyticsRange) {
@@ -175,35 +207,49 @@ export default function InstructorAnalytics({
           )}
         </Card>
       ) : (
-        <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          <StatCard
-            title="Revenue"
-            value={formatRevenue(current.revenue)}
-            current={current.revenue}
-            previous={previous?.revenue ?? null}
-            icon={<DollarSign className="size-4" />}
-          />
-          <StatCard
-            title="Sales"
-            value={formatCount(current.sales)}
-            current={current.sales}
-            previous={previous?.sales ?? null}
-            icon={<ShoppingCart className="size-4" />}
-          />
-          <StatCard
-            title="Seats"
-            value={formatCount(current.seats)}
-            current={current.seats}
-            previous={previous?.seats ?? null}
-            icon={<Users className="size-4" />}
-          />
-          <StatCard
-            title="New enrollments"
-            value={formatCount(current.newEnrollments)}
-            current={current.newEnrollments}
-            previous={previous?.newEnrollments ?? null}
-            icon={<UserPlus className="size-4" />}
-          />
+        <div className="space-y-6">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+            <StatCard
+              title="Revenue"
+              value={formatRevenue(current.revenue)}
+              current={current.revenue}
+              previous={previous?.revenue ?? null}
+              icon={<DollarSign className="size-4" />}
+            />
+            <StatCard
+              title="Sales"
+              value={formatCount(current.sales)}
+              current={current.sales}
+              previous={previous?.sales ?? null}
+              icon={<ShoppingCart className="size-4" />}
+            />
+            <StatCard
+              title="Seats"
+              value={formatCount(current.seats)}
+              current={current.seats}
+              previous={previous?.seats ?? null}
+              icon={<Users className="size-4" />}
+            />
+            <StatCard
+              title="New enrollments"
+              value={formatCount(current.newEnrollments)}
+              current={current.newEnrollments}
+              previous={previous?.newEnrollments ?? null}
+              icon={<UserPlus className="size-4" />}
+            />
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-2">
+            <RevenueChart {...revenueSeries} />
+            <EnrollmentChart {...enrollmentSeries} />
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-3">
+            <div className="lg:col-span-2">
+              <RevenueByCountryTable rows={revenueByCountry} />
+            </div>
+            <RevenueSplitCard {...revenueSplit} />
+          </div>
         </div>
       )}
     </div>

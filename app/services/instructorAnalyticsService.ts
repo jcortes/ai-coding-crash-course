@@ -1,13 +1,15 @@
-import { and, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
 import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 import { db } from "~/db";
 import {
+  coupons,
   courses,
   CourseStatus,
   enrollments,
   purchases,
   UserRole,
 } from "~/db/schema";
+import { getCountryTierInfo } from "~/lib/ppp";
 import { getUserById } from "./userService";
 
 // ─── Instructor Analytics Service ───
@@ -28,7 +30,8 @@ export type AnalyticsAccess =
   | { ok: true; instructor: { id: number; name: string } }
   | {
       ok: false;
-      reason: "unauthenticated" | "forbidden" | "missing_instructor" | "not_found";
+      reason:
+        "unauthenticated" | "forbidden" | "missing_instructor" | "not_found";
     };
 
 // Decides whose analytics the viewer may see. Instructors are always locked to
@@ -177,4 +180,262 @@ export function getInstructorOverview(
       ? getPeriodTotals(instructorId, windows.previous)
       : null,
   };
+}
+
+// ─── Time series ───
+
+export type BucketSize = "day" | "week" | "month";
+
+const BUCKET_SIZE: Record<AnalyticsRange, BucketSize> = {
+  "7d": "day",
+  "30d": "day",
+  "90d": "week",
+  all: "month",
+};
+
+// How each bucket size is computed. `sql` (grouping in the database) and
+// `start` (zero-filling in JS) must map a timestamp to the same UTC
+// "YYYY-MM-DD" bucket start, so they live side by side.
+const BUCKETING: Record<
+  BucketSize,
+  {
+    sql: (column: SQLiteColumn) => SQL<string>;
+    start: (day: Date) => void;
+    step: (bucket: Date) => void;
+  }
+> = {
+  day: {
+    sql: (column) => sql<string>`date(${column})`,
+    start: () => {},
+    step: (d) => d.setUTCDate(d.getUTCDate() + 1),
+  },
+  week: {
+    // Forward to Sunday (or stay), then back to that week's Monday.
+    sql: (column) => sql<string>`date(${column}, 'weekday 0', '-6 days')`,
+    // getUTCDay(): Sunday = 0. Step back to Monday.
+    start: (d) => d.setUTCDate(d.getUTCDate() - ((d.getUTCDay() + 6) % 7)),
+    step: (d) => d.setUTCDate(d.getUTCDate() + 7),
+  },
+  month: {
+    sql: (column) => sql<string>`date(${column}, 'start of month')`,
+    start: (d) => d.setUTCDate(1),
+    step: (d) => d.setUTCMonth(d.getUTCMonth() + 1),
+  },
+};
+
+function bucketExpr(column: SQLiteColumn, size: BucketSize) {
+  return BUCKETING[size].sql(column);
+}
+
+function bucketStart(date: Date, size: BucketSize): Date {
+  const d = new Date(
+    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate())
+  );
+  BUCKETING[size].start(d);
+  return d;
+}
+
+function nextBucket(date: Date, size: BucketSize): Date {
+  const d = new Date(date);
+  BUCKETING[size].step(d);
+  return d;
+}
+
+// Every bucket start from the bucket containing `from` to the one containing `to`.
+function bucketKeys(from: Date, to: Date, size: BucketSize): string[] {
+  const keys: string[] = [];
+  const last = bucketStart(to, size).getTime();
+  for (
+    let d = bucketStart(from, size);
+    d.getTime() <= last;
+    d = nextBucket(d, size)
+  ) {
+    keys.push(d.toISOString().slice(0, 10));
+  }
+  return keys;
+}
+
+// Where the series begins: the window start, or for all time the earliest
+// bucket with data (just the current bucket when there is none).
+function seriesStart(
+  window: DateWindow,
+  rows: { bucket: string }[],
+  now: Date
+): Date {
+  if (window.start) return new Date(window.start);
+  const earliest = rows.reduce<string | null>(
+    (min, r) => (min === null || r.bucket < min ? r.bucket : min),
+    null
+  );
+  return earliest ? new Date(`${earliest}T00:00:00.000Z`) : now;
+}
+
+function countedCourseScope(instructorId: number, courseId: number | null) {
+  return and(
+    countedCoursesOf(instructorId),
+    courseId !== null ? eq(courses.id, courseId) : undefined
+  );
+}
+
+// Lays the grouped rows onto the full list of buckets, zero-filling gaps.
+function fillSeries<T extends { bucket: string }>(
+  rows: T[],
+  window: DateWindow,
+  size: BucketSize,
+  now: Date,
+  empty: Omit<T, "bucket">
+): T[] {
+  const byBucket = new Map(rows.map((r) => [r.bucket, r]));
+  return bucketKeys(seriesStart(window, rows, now), now, size).map(
+    (key) => byBucket.get(key) ?? ({ ...empty, bucket: key } as T)
+  );
+}
+
+export function getRevenueSeries(
+  instructorId: number,
+  range: AnalyticsRange,
+  courseId: number | null = null,
+  now: Date = new Date()
+) {
+  const size = BUCKET_SIZE[range];
+  const { current } = getWindows(range, now);
+  const bucket = bucketExpr(purchases.createdAt, size);
+
+  const rows = db
+    .select({
+      bucket,
+      revenue: sql<number>`coalesce(sum(${purchases.amountPaid}), 0)`,
+      sales: sql<number>`count(${purchases.id})`,
+    })
+    .from(purchases)
+    .innerJoin(courses, eq(purchases.courseId, courses.id))
+    .where(
+      and(
+        countedCourseScope(instructorId, courseId),
+        withinWindow(purchases.createdAt, current)
+      )
+    )
+    .groupBy(bucket)
+    .all();
+
+  return {
+    bucketSize: size,
+    points: fillSeries(rows, current, size, now, { revenue: 0, sales: 0 }),
+  };
+}
+
+export function getEnrollmentSeries(
+  instructorId: number,
+  range: AnalyticsRange,
+  courseId: number | null = null,
+  now: Date = new Date()
+) {
+  const size = BUCKET_SIZE[range];
+  const { current } = getWindows(range, now);
+  const bucket = bucketExpr(enrollments.enrolledAt, size);
+
+  const rows = db
+    .select({
+      bucket,
+      enrollments: sql<number>`count(${enrollments.id})`,
+    })
+    .from(enrollments)
+    .innerJoin(courses, eq(enrollments.courseId, courses.id))
+    .where(
+      and(
+        countedCourseScope(instructorId, courseId),
+        withinWindow(enrollments.enrolledAt, current)
+      )
+    )
+    .groupBy(bucket)
+    .all();
+
+  return {
+    bucketSize: size,
+    points: fillSeries(rows, current, size, now, { enrollments: 0 }),
+  };
+}
+
+// ─── Revenue breakdowns ───
+
+export function getRevenueByCountry(
+  instructorId: number,
+  range: AnalyticsRange,
+  courseId: number | null = null,
+  now: Date = new Date()
+) {
+  const { current } = getWindows(range, now);
+  const revenue = sql<number>`coalesce(sum(${purchases.amountPaid}), 0)`;
+
+  const rows = db
+    .select({
+      country: purchases.country,
+      revenue,
+      sales: sql<number>`count(${purchases.id})`,
+      discount: sql<number>`coalesce(sum(${purchases.listPrice} * ${purchases.quantity} - ${purchases.amountPaid}), 0)`,
+    })
+    .from(purchases)
+    .innerJoin(courses, eq(purchases.courseId, courses.id))
+    .where(
+      and(
+        countedCourseScope(instructorId, courseId),
+        withinWindow(purchases.createdAt, current)
+      )
+    )
+    .groupBy(purchases.country)
+    .orderBy(desc(revenue), purchases.country)
+    .all();
+
+  return rows.map((row) => {
+    const { tier, label } = getCountryTierInfo(row.country);
+    return {
+      country: row.country,
+      tier,
+      tierLabel: label,
+      revenue: row.revenue,
+      sales: row.sales,
+      discount: row.discount,
+    };
+  });
+}
+
+// A purchase is a team purchase when it generated coupons (a team may buy a
+// single seat, so quantity alone can't tell them apart).
+export function getRevenueSplit(
+  instructorId: number,
+  range: AnalyticsRange,
+  courseId: number | null = null,
+  now: Date = new Date()
+) {
+  const { current } = getWindows(range, now);
+  const isTeam = sql<number>`exists (select 1 from ${coupons} where ${coupons.purchaseId} = ${purchases.id})`;
+
+  const rows = db
+    .select({
+      isTeam,
+      revenue: sql<number>`coalesce(sum(${purchases.amountPaid}), 0)`,
+      sales: sql<number>`count(${purchases.id})`,
+      seats: sql<number>`coalesce(sum(${purchases.quantity}), 0)`,
+    })
+    .from(purchases)
+    .innerJoin(courses, eq(purchases.courseId, courses.id))
+    .where(
+      and(
+        countedCourseScope(instructorId, courseId),
+        withinWindow(purchases.createdAt, current)
+      )
+    )
+    .groupBy(isTeam)
+    .all();
+
+  const splitPart = (team: boolean) => {
+    const row = rows.find((r) => Boolean(r.isTeam) === team);
+    return {
+      revenue: row?.revenue ?? 0,
+      sales: row?.sales ?? 0,
+      seats: row?.seats ?? 0,
+    };
+  };
+
+  return { individual: splitPart(false), team: splitPart(true) };
 }
