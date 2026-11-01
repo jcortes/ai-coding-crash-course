@@ -5,6 +5,8 @@ import { getCourseEnrolledStudents } from "~/services/enrollmentService";
 import { getUserById } from "~/services/userService";
 import { calculateProgress } from "~/services/progressService";
 import { getQuizByLessonId, getBestAttempt } from "~/services/quizService";
+import { getCourseBadgesByStudent } from "~/services/badgeService";
+import { BADGE_CATALOG, badgeLabel } from "~/lib/badges";
 import { getCurrentUserId } from "~/lib/session";
 import { UserRole } from "~/db/schema";
 import { Card, CardContent } from "~/components/ui/card";
@@ -92,7 +94,9 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     }
   }
 
-  // Build student data with progress and quiz scores
+  const badgesByStudent = getCourseBadgesByStudent(courseId);
+
+  // Build student data with progress, quiz scores and badges
   const students = enrolledStudents.map((enrollment) => {
     const studentUser = getUserById(enrollment.userId);
     const progress = calculateProgress(enrollment.userId, courseId, false, false);
@@ -117,6 +121,11 @@ export async function loader({ params, request }: Route.LoaderArgs) {
       completedAt: enrollment.completedAt,
       progress,
       quizScores,
+      badges: (badgesByStudent.get(enrollment.userId) ?? []).map((b) => ({
+        id: b.id,
+        type: b.type,
+        title: b.title,
+      })),
     };
   });
 
@@ -254,6 +263,9 @@ export default function InstructorStudentRoster({
                         Quiz Scores
                       </th>
                     )}
+                    <th className="px-4 py-3 text-left text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                      Badges
+                    </th>
                   </tr>
                 </thead>
                 <tbody>
@@ -317,6 +329,29 @@ export default function InstructorStudentRoster({
                             </div>
                           </td>
                         )}
+                        <td className="px-4 py-3">
+                          {student.badges.length === 0 ? (
+                            <span className="text-xs text-muted-foreground">—</span>
+                          ) : (
+                            <div className="flex flex-wrap gap-2">
+                              {student.badges.map((badge) => {
+                                const { icon: Icon } =
+                                  BADGE_CATALOG[badge.type];
+                                const label = badgeLabel(badge);
+                                return (
+                                  <span
+                                    key={badge.id}
+                                    title={label}
+                                    aria-label={label}
+                                    className="inline-flex size-7 items-center justify-center rounded-full bg-primary/10 text-primary"
+                                  >
+                                    <Icon className="size-4" />
+                                  </span>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </td>
                       </tr>
                     );
                   })}

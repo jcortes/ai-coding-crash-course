@@ -4,6 +4,7 @@ import {
   integer,
   real,
   check,
+  uniqueIndex,
   type AnySQLiteColumn,
 } from "drizzle-orm/sqlite-core";
 import { sql } from "drizzle-orm";
@@ -29,6 +30,12 @@ export enum LessonProgressStatus {
 export enum QuestionType {
   MultipleChoice = "multiple_choice",
   TrueFalse = "true_false",
+}
+
+export enum BadgeType {
+  CourseCompleted = "course_completed",
+  ModuleMastered = "module_mastered",
+  Streak = "streak",
 }
 
 export enum TeamMemberRole {
@@ -291,3 +298,39 @@ export const lessonComments = sqliteTable("lesson_comments", {
     .$defaultFn(() => new Date().toISOString()),
   deletedAt: text("deleted_at"),
 });
+
+// Badges are permanent: they survive progress resets, new content and the
+// deletion or renaming of their course. That is why courseId has no foreign
+// key and the course title is copied into the row. Module badges also carry
+// their courseId so the instructor view can list them per course; streak
+// badges are global and use only level.
+export const userBadges = sqliteTable(
+  "user_badges",
+  {
+    id: integer("id").primaryKey({ autoIncrement: true }),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id),
+    type: text("type").notNull().$type<BadgeType>(),
+    courseId: integer("course_id"),
+    moduleId: integer("module_id"),
+    level: integer("level"),
+    title: text("title").notNull(),
+    awardedAt: text("awarded_at").notNull(),
+    seenAt: text("seen_at"),
+  },
+  (table) => [
+    // One partial index per badge type: SQLite treats NULLs as distinct, so a
+    // single composite unique key over the nullable columns would not block
+    // duplicates.
+    uniqueIndex("user_badges_course_completed_unique")
+      .on(table.userId, table.courseId)
+      .where(sql`${table.type} = 'course_completed'`),
+    uniqueIndex("user_badges_module_mastered_unique")
+      .on(table.userId, table.moduleId)
+      .where(sql`${table.type} = 'module_mastered'`),
+    uniqueIndex("user_badges_streak_unique")
+      .on(table.userId, table.level)
+      .where(sql`${table.type} = 'streak'`),
+  ]
+);

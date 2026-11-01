@@ -110,10 +110,14 @@ export function unenrollUser(userId: number, courseId: number) {
     .get();
 }
 
-export function markEnrollmentComplete(userId: number, courseId: number) {
+export function markEnrollmentComplete(
+  userId: number,
+  courseId: number,
+  completedAt: string = new Date().toISOString()
+) {
   return db
     .update(enrollments)
-    .set({ completedAt: new Date().toISOString() })
+    .set({ completedAt })
     .where(
       and(eq(enrollments.userId, userId), eq(enrollments.courseId, courseId))
     )

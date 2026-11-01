@@ -14,7 +14,9 @@ import {
   getNextIncompleteLesson,
 } from "~/services/progressService";
 import { getCurrentUserId } from "~/lib/session";
-import { LessonProgressStatus } from "~/db/schema";
+import { BadgeType, LessonProgressStatus } from "~/db/schema";
+import { getMasteredModuleIds } from "~/services/badgeService";
+import { BADGE_CATALOG } from "~/lib/badges";
 import { Card, CardContent, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
@@ -71,8 +73,11 @@ export async function loader({ params, request }: Route.LoaderArgs) {
   let progress = 0;
   let lessonProgressMap: Record<number, string> = {};
   let nextLessonId: number | null = null;
+  // Badges are permanent, so mastered modules show even after unenrolling.
+  let masteredModuleIds: number[] = [];
 
   if (currentUserId) {
+    masteredModuleIds = [...getMasteredModuleIds(currentUserId, course.id)];
     enrolled = isUserEnrolled(currentUserId, course.id);
 
     if (enrolled) {
@@ -111,6 +116,7 @@ export async function loader({ params, request }: Route.LoaderArgs) {
     lessonProgressMap,
     nextLessonId,
     currentUserId,
+    masteredModuleIds,
     pppPrice,
     tierInfo,
   };
@@ -179,6 +185,7 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
     lessonProgressMap,
     nextLessonId,
     currentUserId,
+    masteredModuleIds,
     pppPrice,
     tierInfo,
   } = loaderData;
@@ -355,6 +362,7 @@ export default function CourseDetail({ loaderData }: Route.ComponentProps) {
               enrolled={enrolled}
               isInstructor={isInstructor}
               lessonProgressMap={lessonProgressMap}
+              masteredModuleIds={masteredModuleIds}
             />
           </div>
         </div>
@@ -455,6 +463,7 @@ function CourseContent({
   enrolled,
   isInstructor,
   lessonProgressMap,
+  masteredModuleIds,
 }: {
   course: {
     id: number;
@@ -472,7 +481,9 @@ function CourseContent({
   enrolled: boolean;
   isInstructor: boolean;
   lessonProgressMap: Record<number, string>;
+  masteredModuleIds: number[];
 }) {
+  const { name, icon: MasteredIcon } = BADGE_CATALOG[BadgeType.ModuleMastered];
   return (
     <div>
       <h2 className="mb-4 text-2xl font-bold">Course Content</h2>
@@ -485,13 +496,18 @@ function CourseContent({
           {course.modules.map((mod) => (
             <Card key={mod.id}>
               <CardHeader>
-                <h3 className="font-semibold">
+                <h3 className="flex items-center gap-2 font-semibold">
                   <Link
                     to={`/courses/${course.slug}/${mod.id}`}
                     className="hover:underline"
                   >
                     {mod.title}
                   </Link>
+                  {masteredModuleIds.includes(mod.id) && (
+                    <span title={name} aria-label={name}>
+                      <MasteredIcon className="size-4 text-amber-500" />
+                    </span>
+                  )}
                 </h3>
                 <p className="text-sm text-muted-foreground">
                   {mod.lessons.length} lessons

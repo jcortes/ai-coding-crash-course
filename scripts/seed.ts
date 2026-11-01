@@ -1,5 +1,5 @@
 import Database from "better-sqlite3";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import path from "path";
@@ -11,8 +11,10 @@ import {
   LessonProgressStatus,
   QuestionType,
   TeamMemberRole,
+  BadgeType,
 } from "../app/db/schema";
 import { calculatePppPrice } from "../app/lib/ppp";
+import { backfillBadges } from "../app/services/badgeService";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -32,6 +34,15 @@ function daysAgo(n: number): string {
   return d.toISOString();
 }
 
+// A moment on a UTC day relative to today. Hour 0 of today is never in the
+// future, so it is safe for "done today" data.
+function utcDayAt(daysBack: number, hour: number): string {
+  const d = new Date();
+  d.setUTCHours(hour, 0, 0, 0);
+  d.setUTCDate(d.getUTCDate() - daysBack);
+  return d.toISOString();
+}
+
 function slugify(title: string): string {
   return title
     .toLowerCase()
@@ -46,6 +57,7 @@ async function seed() {
 
   // Drop and recreate tables for a clean seed
   sqlite.exec(`
+    DROP TABLE IF EXISTS user_badges;
     DROP TABLE IF EXISTS lesson_comments;
     DROP TABLE IF EXISTS video_watch_events;
     DROP TABLE IF EXISTS quiz_answers;
@@ -1378,11 +1390,58 @@ You've completed the Building REST APIs course. You now have the skills to build
 
   console.log("Created 3 quizzes with questions and options.");
 
+  // ─── Lesson check quizzes ───
+  // Streaks only count lessons with a quiz, so every lesson of course 1 and the
+  // first part of course 2 get a one-question check. That gives the badge demo
+  // (Emma's 15-day streak needs 30 quiz lessons) enough material.
+  type QuizOptions = { questionId: number; optionId: number; correct: boolean }[];
+  const quizByLesson = new Map<number, { id: number; optionIds: QuizOptions }>([
+    [course1LessonIds[2], { id: quiz1.id, optionIds: quiz1OptionIds }],
+    [course1LessonIds[7], { id: quiz2.id, optionIds: quiz2OptionIds }],
+    [course2LessonIds[2], { id: quiz3.id, optionIds: quiz3OptionIds }],
+  ]);
+
+  const checkQuizLessonIds = [...course1LessonIds, ...course2LessonIds.slice(0, 11)];
+  for (const lessonId of checkQuizLessonIds) {
+    if (quizByLesson.has(lessonId)) continue;
+
+    const [quiz] = db
+      .insert(schema.quizzes)
+      .values({ lessonId, title: "Lesson Check", passingScore: 0.7 })
+      .returning()
+      .all();
+    const [question] = db
+      .insert(schema.quizQuestions)
+      .values({
+        quizId: quiz.id,
+        questionText: "I can explain the main idea of this lesson in my own words.",
+        questionType: QuestionType.TrueFalse,
+        position: 1,
+      })
+      .returning()
+      .all();
+    const optionIds: QuizOptions = [];
+    for (const opt of [
+      { text: "True", correct: true },
+      { text: "False", correct: false },
+    ]) {
+      const [option] = db
+        .insert(schema.quizOptions)
+        .values({ questionId: question.id, optionText: opt.text, isCorrect: opt.correct })
+        .returning()
+        .all();
+      optionIds.push({ questionId: question.id, optionId: option.id, correct: opt.correct });
+    }
+    quizByLesson.set(lessonId, { id: quiz.id, optionIds });
+  }
+
+  console.log(`Created lesson check quizzes (${quizByLesson.size} lessons with a quiz).`);
+
   // ─── Enrollments ───
   // Varied enrollment patterns:
-  // - Emma: enrolled in both courses (nearly complete in course 1, mid-way in course 2)
-  // - James: enrolled in course 1 only (completed)
-  // - Olivia: enrolled in both courses (just started course 1, mid-way in course 2)
+  // - Emma: enrolled in both courses (completed course 1, mid-way in course 2)
+  // - James: enrolled in course 1 only (most of it done, on an active streak)
+  // - Olivia: enrolled in both courses (one lesson left in course 1, mid-way in course 2)
   // - Liam: enrolled in course 2 only (just started, abandoned)
   // - Sophia: enrolled in course 1 only (recently enrolled, barely started)
 
@@ -1390,12 +1449,7 @@ You've completed the Building REST APIs course. You now have the skills to build
     .values([
       { userId: students[0].id, courseId: course1.id, enrolledAt: daysAgo(50) },
       { userId: students[0].id, courseId: course2.id, enrolledAt: daysAgo(40) },
-      {
-        userId: students[1].id,
-        courseId: course1.id,
-        enrolledAt: daysAgo(45),
-        completedAt: daysAgo(10),
-      },
+      { userId: students[1].id, courseId: course1.id, enrolledAt: daysAgo(45) },
       { userId: students[2].id, courseId: course1.id, enrolledAt: daysAgo(35) },
       { userId: students[2].id, courseId: course2.id, enrolledAt: daysAgo(30) },
       { userId: students[3].id, courseId: course2.id, enrolledAt: daysAgo(25) },
@@ -1433,28 +1487,16 @@ You've completed the Building REST APIs course. You now have the skills to build
       .run();
   }
 
-  // Emma (students[0]) — nearly complete in course 1 (17 of 19 lessons done)
-  for (let i = 0; i < 17; i++) {
-    markComplete(students[0].id, course1LessonIds[i], 50 - i);
-  }
-  markInProgress(students[0].id, course1LessonIds[17]);
+  // Emma's and James's progress is laid out by the badge demo after the quiz
+  // attempts below, because it pairs each completion with a passed quiz.
 
-  // Emma — mid-way through course 2 (10 of 20 lessons done)
-  for (let i = 0; i < 10; i++) {
-    markComplete(students[0].id, course2LessonIds[i], 40 - i);
-  }
-  markInProgress(students[0].id, course2LessonIds[10]);
-
-  // James (students[1]) — completed all of course 1
-  for (let i = 0; i < course1LessonIds.length; i++) {
-    markComplete(students[1].id, course1LessonIds[i], 45 - i);
-  }
-
-  // Olivia (students[2]) — just started course 1 (3 lessons done)
-  for (let i = 0; i < 3; i++) {
+  // Olivia (students[2]) — one lesson left in course 1. Marking the last
+  // lesson complete demos the live "Badge unlocked" toast.
+  const oliviaLastLesson = course1LessonIds.length - 1;
+  for (let i = 0; i < oliviaLastLesson; i++) {
     markComplete(students[2].id, course1LessonIds[i], 30 - i);
   }
-  markInProgress(students[2].id, course1LessonIds[3]);
+  markInProgress(students[2].id, course1LessonIds[oliviaLastLesson]);
 
   // Olivia — mid-way through course 2 (8 lessons done)
   for (let i = 0; i < 8; i++) {
@@ -1480,7 +1522,7 @@ You've completed the Building REST APIs course. You now have the skills to build
     quizId: number,
     optionIds: { questionId: number; optionId: number; correct: boolean }[],
     selectedCorrectIndices: number[], // which questions (0-based) the student got right
-    attemptDaysAgo: number
+    attemptedAt: number | string // days ago, or an exact ISO timestamp
   ) {
     const totalQuestions = new Set(optionIds.map((o) => o.questionId)).size;
     const correctCount = selectedCorrectIndices.length;
@@ -1496,7 +1538,8 @@ You've completed the Building REST APIs course. You now have the skills to build
         quizId,
         score,
         passed,
-        attemptedAt: daysAgo(attemptDaysAgo),
+        attemptedAt:
+          typeof attemptedAt === "number" ? daysAgo(attemptedAt) : attemptedAt,
       })
       .returning()
       .all();
@@ -1526,22 +1569,12 @@ You've completed the Building REST APIs course. You now have the skills to build
     }
   }
 
-  // Emma — passed quiz 1 (3/3 correct)
-  recordQuizAttempt(students[0].id, quiz1.id, quiz1OptionIds, [0, 1, 2], 35);
-
-  // Emma — passed quiz 2 (2/2 correct)
-  recordQuizAttempt(students[0].id, quiz2.id, quiz2OptionIds, [0, 1], 30);
-
-  // Emma — passed quiz 3 (2/3 correct, just barely at 67% with 70% passing = fail, then retake)
-  recordQuizAttempt(students[0].id, quiz3.id, quiz3OptionIds, [0, 2], 28);
-  // Retake — all correct
-  recordQuizAttempt(students[0].id, quiz3.id, quiz3OptionIds, [0, 1, 2], 27);
-
-  // James — passed quiz 1 (3/3 correct)
-  recordQuizAttempt(students[1].id, quiz1.id, quiz1OptionIds, [0, 1, 2], 40);
-
-  // James — passed quiz 2 (2/2 correct)
-  recordQuizAttempt(students[1].id, quiz2.id, quiz2OptionIds, [0, 1], 35);
+  // Olivia — passed the checks of module 1's first two lessons, which with
+  // quiz 1 below masters the module (a badge Sarah sees in her roster).
+  for (const i of [0, 1]) {
+    const check = quizByLesson.get(course1LessonIds[i])!;
+    recordQuizAttempt(students[2].id, check.id, check.optionIds, [0], 30 - i);
+  }
 
   // Olivia — failed quiz 1 first attempt (1/3 correct), then passed on retry (3/3)
   recordQuizAttempt(students[2].id, quiz1.id, quiz1OptionIds, [0], 25);
@@ -1554,6 +1587,60 @@ You've completed the Building REST APIs course. You now have the skills to build
   recordQuizAttempt(students[4].id, quiz1.id, quiz1OptionIds, [1], 10);
 
   console.log("Created quiz attempts and answers.");
+
+  // ─── Badge demo progress ───
+  // Streaks count UTC days with 2+ lessons that are both completed and have a
+  // passed quiz, so these students finish quiz lessons at exact UTC moments.
+
+  function allCorrectIndices(optionIds: QuizOptions) {
+    const questionCount = new Set(optionIds.map((o) => o.questionId)).size;
+    return Array.from({ length: questionCount }, (_, i) => i);
+  }
+
+  function finishQuizLesson(userId: number, lessonId: number, at: string) {
+    const quiz = quizByLesson.get(lessonId)!;
+    db.insert(schema.lessonProgress)
+      .values({ userId, lessonId, status: LessonProgressStatus.Completed, completedAt: at })
+      .run();
+    recordQuizAttempt(userId, quiz.id, quiz.optionIds, allCorrectIndices(quiz.optionIds), at);
+  }
+
+  // Emma (students[0]) — the full collection. She finished all of course 1 and
+  // the first 11 lessons of course 2, two quiz lessons a day for 15 consecutive
+  // UTC days (30 to 16 days ago): course badge, every course 1 module mastered
+  // and the 3-, 7- and 15-day streaks. Her streak has since lapsed.
+  const emmaLessons = [...course1LessonIds, ...course2LessonIds.slice(0, 11)];
+  // Quiz 3 took her two tries: a failed attempt (2/3) the day before.
+  recordQuizAttempt(
+    students[0].id,
+    quiz3.id,
+    quiz3OptionIds,
+    [0, 2],
+    utcDayAt(30 - Math.floor(emmaLessons.indexOf(course2LessonIds[2]) / 2) + 1, 12)
+  );
+  emmaLessons.forEach((lessonId, i) => {
+    finishQuizLesson(students[0].id, lessonId, utcDayAt(30 - Math.floor(i / 2), i % 2 ? 15 : 10));
+  });
+  markInProgress(students[0].id, course2LessonIds[11]);
+
+  // James (students[1]) — the live streak and module toasts. Modules 1-3 were
+  // done one lesson every few days (no streak, but mastered). Then a 2-day
+  // streak: module 4's first four lessons two days ago and yesterday, and one
+  // lesson of module 5 today (1/2). Module 4's last lesson is still pending:
+  // completing it and passing its quiz makes today 2/2 (3-day streak) and
+  // masters module 4. Two lessons of module 5 stay open, so the course isn't
+  // completed.
+  for (let i = 0; i <= 10; i++) {
+    finishQuizLesson(students[1].id, course1LessonIds[i], utcDayAt(44 - 3 * i, 10));
+  }
+  finishQuizLesson(students[1].id, course1LessonIds[11], utcDayAt(2, 10));
+  finishQuizLesson(students[1].id, course1LessonIds[12], utcDayAt(2, 15));
+  finishQuizLesson(students[1].id, course1LessonIds[13], utcDayAt(1, 10));
+  finishQuizLesson(students[1].id, course1LessonIds[14], utcDayAt(1, 15));
+  finishQuizLesson(students[1].id, course1LessonIds[16], utcDayAt(0, 0));
+  markInProgress(students[1].id, course1LessonIds[15]);
+
+  console.log("Created badge demo progress for Emma and James.");
 
   // ─── Video Watch Events ───
   // Sprinkle some realistic watch events
@@ -1885,9 +1972,6 @@ You've completed the Building REST APIs course. You now have the skills to build
     enrolledDaysAgo: number
   ) {
     const maxLessons = Math.min(course.lessonIds.length, enrolledDaysAgo + 1);
-    let completed = 0;
-    let lastCompletedDay = enrolledDaysAgo;
-
     for (let i = 0; i < maxLessons; i++) {
       const lessonId = course.lessonIds[i];
       const day = Math.max(
@@ -1917,17 +2001,14 @@ You've completed the Building REST APIs course. You now have the skills to build
       }
 
       markComplete(userId, lessonId, day);
-      completed++;
-      lastCompletedDay = day;
     }
 
-    const finished = completed === course.lessonIds.length;
+    // completedAt is left to the badge backfill at the end of the seed.
     db.insert(schema.enrollments)
       .values({
         userId,
         courseId: course.id,
         enrolledAt: daysAgo(enrolledDaysAgo),
-        completedAt: finished ? daysAgo(lastCompletedDay) : null,
       })
       .run();
   }
@@ -2077,6 +2158,23 @@ You've completed the Building REST APIs course. You now have the skills to build
     `Created analytics demo data: ${demoUserCount} students, ${demoIndividualPurchases} individual purchases, ${demoTeamPurchases.length} team purchases (${demoCoupons} seats).`
   );
 
+  // ─── Badges ───
+  // Awarded by running the badge backfill over the historical progress above,
+  // so the demo exercises it too: dates are historical, every badge starts
+  // unseen and finished enrollments get their completedAt.
+  backfillBadges();
+  // Emma saw her streak badges back when she earned them; the course and
+  // module badges are still "New".
+  db.update(schema.userBadges)
+    .set({ seenAt: daysAgo(15) })
+    .where(
+      and(
+        eq(schema.userBadges.userId, students[0].id),
+        eq(schema.userBadges.type, BadgeType.Streak)
+      )
+    )
+    .run();
+
   const count = (table: string) =>
     (
       sqlite.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as {
@@ -2090,7 +2188,7 @@ You've completed the Building REST APIs course. You now have the skills to build
   console.log(
     `  Courses: 2 (${course1LessonIds.length} + ${course2LessonIds.length} lessons)`
   );
-  console.log("  Quizzes: 3");
+  console.log(`  Quizzes: ${count("quizzes")}`);
   console.log(`  Quiz attempts: ${count("quiz_attempts")}`);
   console.log(`  Enrollments: ${count("enrollments")}`);
   console.log(`  Lesson progress: ${count("lesson_progress")}`);
@@ -2098,6 +2196,7 @@ You've completed the Building REST APIs course. You now have the skills to build
     `  Purchases: ${count("purchases")} (${count("purchases WHERE id NOT IN (SELECT purchase_id FROM coupons)")} individual + ${count("purchases WHERE id IN (SELECT purchase_id FROM coupons)")} team)`
   );
   console.log(`  Teams: ${count("teams")} (with ${count("coupons")} coupons)`);
+  console.log(`  Badges: ${count("user_badges")}`);
 }
 
 // Small deterministic PRNG so the seed produces the same data on every run

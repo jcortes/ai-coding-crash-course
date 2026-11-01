@@ -6,11 +6,17 @@ import { getCurrentUserId } from "~/lib/session";
 import { Card, CardContent, CardFooter, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
-import { AlertTriangle, BookOpen, CheckCircle2, GraduationCap, PlayCircle } from "lucide-react";
+import { AlertTriangle, BookOpen, CheckCircle2, Flame, GraduationCap, PlayCircle } from "lucide-react";
 import { CourseImage } from "~/components/course-image";
 import { data, isRouteErrorResponse, redirect } from "react-router";
 import { getUserById } from "~/services/userService";
 import { UserRole } from "~/db/schema";
+import {
+  getStreakSummary,
+  getUserBadges,
+  markBadgesSeen,
+} from "~/services/badgeService";
+import { BADGE_CATALOG, STREAK_DAILY_GOAL } from "~/lib/badges";
 
 export function meta() {
   return [
@@ -65,7 +71,87 @@ export async function loader({ request }: Route.LoaderArgs) {
   const completedCourses = coursesWithProgress.filter((c) => c.isCompleted);
   const inProgressCourses = coursesWithProgress.filter((c) => !c.isCompleted);
 
-  return { inProgressCourses, completedCourses };
+  // Read the badges before marking them seen so this visit still shows "New".
+  const badges = getUserBadges(currentUserId).map((b) => ({
+    id: b.id,
+    type: b.type,
+    title: b.title,
+    awardedAt: b.awardedAt,
+    isNew: b.seenAt === null,
+  }));
+  markBadgesSeen(currentUserId);
+
+  const streak = getStreakSummary(currentUserId);
+
+  return { inProgressCourses, completedCourses, badges, streak };
+}
+
+function StreakCounter({
+  streak,
+}: {
+  streak: Route.ComponentProps["loaderData"]["streak"];
+}) {
+  const todayDone = Math.min(streak.lessonsToday, STREAK_DAILY_GOAL);
+  return (
+    <Card className="mb-8 flex-row items-center gap-4 p-4">
+      <div className="flex size-12 shrink-0 items-center justify-center rounded-full bg-orange-100 text-orange-600 dark:bg-orange-900/30 dark:text-orange-400">
+        <Flame className="size-6" />
+      </div>
+      <div>
+        <p className="font-semibold">
+          Current streak: {streak.currentStreak}{" "}
+          {streak.currentStreak === 1 ? "day" : "days"}
+        </p>
+        <p className="text-sm text-muted-foreground">
+          {todayDone}/{STREAK_DAILY_GOAL} lessons today
+        </p>
+      </div>
+    </Card>
+  );
+}
+
+function MyBadges({
+  badges,
+}: {
+  badges: Route.ComponentProps["loaderData"]["badges"];
+}) {
+  return (
+    <section className="mb-8">
+      <h2 className="mb-4 text-xl font-semibold">My badges</h2>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {badges.map((badge) => {
+          const { name, icon: Icon, description } = BADGE_CATALOG[badge.type];
+          return (
+            <Card key={badge.id} className="flex-row items-center gap-4 p-4">
+              <div className="flex size-12 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                <Icon className="size-6" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold">{name}</span>
+                  {badge.isNew && (
+                    <span className="rounded-full bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground">
+                      New
+                    </span>
+                  )}
+                </div>
+                <p className="truncate text-sm" title={description}>
+                  {badge.title}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {new Date(badge.awardedAt).toLocaleDateString(undefined, {
+                    year: "numeric",
+                    month: "short",
+                    day: "numeric",
+                  })}
+                </p>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 function DashboardCardSkeleton() {
@@ -108,7 +194,7 @@ export function HydrateFallback() {
 }
 
 export default function Dashboard({ loaderData }: Route.ComponentProps) {
-  const { inProgressCourses, completedCourses } = loaderData;
+  const { inProgressCourses, completedCourses, badges, streak } = loaderData;
   const totalCourses = inProgressCourses.length + completedCourses.length;
 
   return (
@@ -128,6 +214,10 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
           Track your learning progress
         </p>
       </div>
+
+      <StreakCounter streak={streak} />
+
+      {badges.length > 0 && <MyBadges badges={badges} />}
 
       {totalCourses === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">
