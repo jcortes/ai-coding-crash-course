@@ -13,6 +13,7 @@ vi.mock("~/db", () => ({
 
 // Import after mock so the modules pick up our test db
 import {
+  backfillBadges,
   evaluateBadgesForLesson,
   evaluateBadgesForUser,
   getCourseBadgesByStudent,
@@ -515,6 +516,107 @@ describe("badgeService", () => {
       );
       expect(awarded).toHaveLength(3);
       expect(evaluateBadgesForUser(base.user.id)).toEqual([]);
+    });
+  });
+
+  describe("backfillBadges", () => {
+    function createStudent(email: string) {
+      const student = testDb
+        .insert(schema.users)
+        .values({ name: email, email, role: schema.UserRole.Student })
+        .returning()
+        .get();
+      testDb
+        .insert(schema.enrollments)
+        .values({ userId: student.id, courseId: base.course.id })
+        .run();
+      return student;
+    }
+
+    function allBadges() {
+      return testDb.select().from(schema.userBadges).all();
+    }
+
+    it("awards every user's earned badges with the historical dates, unseen", () => {
+      const other = createStudent("other@example.com");
+      const [lesson] = createModuleWithLessons(base.course.id, 1);
+      const quiz = addQuiz(lesson.id);
+      completeLesson(base.user.id, lesson.id, "2025-03-01T10:00:00.000Z");
+      attemptQuiz(base.user.id, quiz.id, "2025-03-02T11:00:00.000Z");
+      completeLesson(other.id, lesson.id, "2025-04-05T08:00:00.000Z");
+
+      const result = backfillBadges();
+
+      expect(result).toEqual({ userCount: 3, badgesAwarded: 3 });
+      expect(
+        allBadges()
+          .map((b) => [b.userId, b.type, b.awardedAt, b.seenAt])
+          .sort()
+      ).toEqual(
+        [
+          [base.user.id, schema.BadgeType.CourseCompleted, "2025-03-01T10:00:00.000Z", null],
+          [base.user.id, schema.BadgeType.ModuleMastered, "2025-03-02T11:00:00.000Z", null],
+          [other.id, schema.BadgeType.CourseCompleted, "2025-04-05T08:00:00.000Z", null],
+        ].sort()
+      );
+    });
+
+    it("fills enrollments.completedAt for finished courses with the historical date", () => {
+      const other = createStudent("other@example.com");
+      const lessons = createModuleWithLessons(base.course.id, 2);
+      completeLesson(base.user.id, lessons[0].id, "2025-03-01T10:00:00.000Z");
+      completeLesson(base.user.id, lessons[1].id, "2025-03-04T10:00:00.000Z");
+      completeLesson(other.id, lessons[0].id, "2025-03-01T10:00:00.000Z");
+
+      backfillBadges();
+
+      expect(findEnrollment(base.user.id, base.course.id)?.completedAt).toBe(
+        "2025-03-04T10:00:00.000Z"
+      );
+      expect(findEnrollment(other.id, base.course.id)?.completedAt).toBeNull();
+    });
+
+    it("dates course completion by each lesson's first completion, ignoring later duplicate rows", () => {
+      const lessons = createModuleWithLessons(base.course.id, 2);
+      completeLesson(base.user.id, lessons[0].id, "2025-03-01T10:00:00.000Z");
+      completeLesson(base.user.id, lessons[1].id, "2025-03-02T10:00:00.000Z");
+      completeLesson(base.user.id, lessons[0].id, "2025-05-01T10:00:00.000Z");
+
+      backfillBadges();
+
+      expect(allBadges()[0].awardedAt).toBe("2025-03-02T10:00:00.000Z");
+      expect(findEnrollment(base.user.id, base.course.id)?.completedAt).toBe(
+        "2025-03-02T10:00:00.000Z"
+      );
+    });
+
+    it("is idempotent: re-running creates no duplicates and keeps dates and seen state", () => {
+      finishStreakDays(base.user.id, ["2025-06-01", "2025-06-02", "2025-06-03"]);
+      backfillBadges();
+      markBadgesSeen(base.user.id);
+      const before = allBadges();
+      const enrollmentBefore = findEnrollment(base.user.id, base.course.id);
+
+      const result = backfillBadges();
+
+      expect(result.badgesAwarded).toBe(0);
+      expect(allBadges()).toEqual(before);
+      expect(findEnrollment(base.user.id, base.course.id)).toEqual(
+        enrollmentBefore
+      );
+    });
+
+    it("only adds badges earned since the previous run", () => {
+      const lessons = createModuleWithLessons(base.course.id, 2);
+      completeLesson(base.user.id, lessons[0].id, "2025-03-01T10:00:00.000Z");
+      backfillBadges();
+      expect(allBadges()).toHaveLength(0);
+
+      completeLesson(base.user.id, lessons[1].id, "2025-03-05T10:00:00.000Z");
+      const result = backfillBadges();
+
+      expect(result.badgesAwarded).toBe(1);
+      expect(allBadges()[0].awardedAt).toBe("2025-03-05T10:00:00.000Z");
     });
   });
 

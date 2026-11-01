@@ -14,7 +14,7 @@ import {
   BadgeType,
 } from "../app/db/schema";
 import { calculatePppPrice } from "../app/lib/ppp";
-import { evaluateBadgesForUser } from "../app/services/badgeService";
+import { backfillBadges } from "../app/services/badgeService";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -1972,9 +1972,6 @@ You've completed the Building REST APIs course. You now have the skills to build
     enrolledDaysAgo: number
   ) {
     const maxLessons = Math.min(course.lessonIds.length, enrolledDaysAgo + 1);
-    let completed = 0;
-    let lastCompletedDay = enrolledDaysAgo;
-
     for (let i = 0; i < maxLessons; i++) {
       const lessonId = course.lessonIds[i];
       const day = Math.max(
@@ -2004,17 +2001,14 @@ You've completed the Building REST APIs course. You now have the skills to build
       }
 
       markComplete(userId, lessonId, day);
-      completed++;
-      lastCompletedDay = day;
     }
 
-    const finished = completed === course.lessonIds.length;
+    // completedAt is left to the badge backfill at the end of the seed.
     db.insert(schema.enrollments)
       .values({
         userId,
         courseId: course.id,
         enrolledAt: daysAgo(enrolledDaysAgo),
-        completedAt: finished ? daysAgo(lastCompletedDay) : null,
       })
       .run();
   }
@@ -2165,11 +2159,10 @@ You've completed the Building REST APIs course. You now have the skills to build
   );
 
   // ─── Badges ───
-  // Awarded from the progress above with the same logic a backfill uses, so
-  // dates are historical and every badge starts unseen.
-  for (const user of db.select({ id: schema.users.id }).from(schema.users).all()) {
-    evaluateBadgesForUser(user.id);
-  }
+  // Awarded by running the badge backfill over the historical progress above,
+  // so the demo exercises it too: dates are historical, every badge starts
+  // unseen and finished enrollments get their completedAt.
+  backfillBadges();
   // Emma saw her streak badges back when she earned them; the course and
   // module badges are still "New".
   db.update(schema.userBadges)

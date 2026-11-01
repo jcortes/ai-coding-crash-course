@@ -18,6 +18,7 @@ import {
 import { getCourseById } from "~/services/courseService";
 import { getModuleById, getModulesByCourse } from "~/services/moduleService";
 import { getLessonsByModule } from "~/services/lessonService";
+import { getAllUsers } from "~/services/userService";
 import { STREAK_DAILY_GOAL, STREAK_LEVELS, streakTitle } from "~/lib/badges";
 
 // ─── Badge Service ───
@@ -32,6 +33,20 @@ function insertBadge(badge: typeof userBadges.$inferInsert) {
   // The per-type unique indexes turn a repeat award into a no-op, so callers
   // can evaluate as often as they like.
   return db.insert(userBadges).values(badge).onConflictDoNothing().returning().get();
+}
+
+// Each lesson's first completion date. lesson_progress has no unique
+// (user, lesson) key, so later duplicate rows are ignored.
+function firstCompletionByLesson(
+  rows: { lessonId: number; completedAt: string | null }[]
+) {
+  const first = new Map<number, string>();
+  for (const { lessonId, completedAt } of rows) {
+    if (!completedAt) continue;
+    const existing = first.get(lessonId);
+    if (!existing || completedAt < existing) first.set(lessonId, completedAt);
+  }
+  return first;
 }
 
 // The date the user completed the last lesson of the course, or null if any
@@ -66,11 +81,10 @@ function getCourseCompletionDate(userId: number, courseId: number) {
   const completedLessonIds = new Set(completed.map((p) => p.lessonId));
   if (completedLessonIds.size < lessonIds.length) return null;
 
-  const latest = completed.reduce<string | null>(
-    (latest, p) =>
-      p.completedAt && (!latest || p.completedAt > latest)
-        ? p.completedAt
-        : latest,
+  // Dated by each lesson's first completion, so a later duplicate row doesn't
+  // move the date the course was finished.
+  const latest = [...firstCompletionByLesson(completed).values()].reduce<string | null>(
+    (latest, at) => (!latest || at > latest ? at : latest),
     null
   );
   // Rows without a completion date still count; date the award now.
@@ -186,27 +200,21 @@ function previousUtcDay(day: string) {
 
 // When each of the user's lessons started counting, oldest first.
 function getStreakLessonDates(userId: number) {
-  const completedAt = new Map<number, string>();
-  for (const p of db
-    .select({
-      lessonId: lessonProgress.lessonId,
-      completedAt: lessonProgress.completedAt,
-    })
-    .from(lessonProgress)
-    .where(
-      and(
-        eq(lessonProgress.userId, userId),
-        eq(lessonProgress.status, LessonProgressStatus.Completed)
+  const completedAt = firstCompletionByLesson(
+    db
+      .select({
+        lessonId: lessonProgress.lessonId,
+        completedAt: lessonProgress.completedAt,
+      })
+      .from(lessonProgress)
+      .where(
+        and(
+          eq(lessonProgress.userId, userId),
+          eq(lessonProgress.status, LessonProgressStatus.Completed)
+        )
       )
-    )
-    .all()) {
-    if (!p.completedAt) continue;
-    // lesson_progress has no unique (user, lesson) key; the first completion wins.
-    const existing = completedAt.get(p.lessonId);
-    if (!existing || p.completedAt < existing) {
-      completedAt.set(p.lessonId, p.completedAt);
-    }
-  }
+      .all()
+  );
 
   const { firstPass } = getFirstPassDates(userId, [...completedAt.keys()]);
 
@@ -306,6 +314,19 @@ export function evaluateBadgesForUser(userId: number) {
     ];
   });
   return [...perCourse, ...evaluateStreaks(userId)];
+}
+
+// Awards every user the badges their existing progress has already earned,
+// for rolling badges out to existing students. Safe to re-run: earned badges
+// are left untouched (dates and seen state included) and only missing ones
+// are added, dated historically and unseen.
+export function backfillBadges() {
+  const users = getAllUsers();
+  const badgesAwarded = users.reduce(
+    (total, user) => total + evaluateBadgesForUser(user.id).length,
+    0
+  );
+  return { userCount: users.length, badgesAwarded };
 }
 
 export function getUserBadges(userId: number) {
