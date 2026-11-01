@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Link, useFetcher, useNavigate } from "react-router";
 import { toast } from "sonner";
 import type { Route } from "./+types/instructor.$courseId.lessons.$lessonId.quiz";
@@ -359,15 +359,13 @@ export default function QuizBuilderWizard({
     | { success?: boolean; deleted?: boolean; error?: string }
     | undefined;
 
-  if (fetcher.state === "idle" && fetcherData?.success) {
-    if (fetcherData.deleted) {
-      toast.success("Quiz deleted.");
-      navigate(`/instructor/${course.id}/lessons/${lesson.id}`);
-    } else {
-      toast.success("Quiz saved.");
-      navigate(`/instructor/${course.id}/lessons/${lesson.id}`);
-    }
-  }
+  // Toast and navigate in an effect: doing it during render loops forever,
+  // because fetcher.data stays `success` across re-renders.
+  useEffect(() => {
+    if (fetcher.state !== "idle" || !fetcherData?.success) return;
+    toast.success(fetcherData.deleted ? "Quiz deleted." : "Quiz saved.");
+    navigate(`/instructor/${course.id}/lessons/${lesson.id}`);
+  }, [fetcher.state, fetcherData, navigate, course.id, lesson.id]);
 
   // ─── Step 1: Settings ───
   function renderStep1() {
