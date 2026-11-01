@@ -39,6 +39,7 @@ interface SidebarProps {
   currentUser: CurrentUser | null;
   recentCourses?: RecentCourse[];
   isTeamAdmin?: boolean;
+  hasUnseenBadges?: boolean;
 }
 
 interface NavItem {
@@ -48,6 +49,8 @@ interface NavItem {
   roles: UserRole[] | "all";
   // Sub-paths that belong to another nav item and shouldn't highlight this one.
   excludePaths?: string[];
+  // Shows the unseen-badges dot on this item.
+  showsUnseenBadges?: boolean;
 }
 
 const navItems: NavItem[] = [
@@ -62,6 +65,7 @@ const navItems: NavItem[] = [
     to: "/dashboard",
     icon: <LayoutDashboard className="size-4" />,
     roles: [UserRole.Student],
+    showsUnseenBadges: true,
   },
   {
     label: "Analytics",
@@ -106,6 +110,7 @@ export function Sidebar({
   currentUser,
   recentCourses = [],
   isTeamAdmin = false,
+  hasUnseenBadges = false,
 }: SidebarProps) {
   const currentUserRole = currentUser?.role ?? null;
   const { pathname } = useLocation();
@@ -151,6 +156,15 @@ export function Sidebar({
             >
               {item.icon}
               {item.label}
+              {/* Hidden on the dashboard itself, which marks badges as seen. */}
+              {item.showsUnseenBadges &&
+                hasUnseenBadges &&
+                pathname !== item.to && (
+                  <span
+                    className="ml-auto size-2 rounded-full bg-primary"
+                    aria-label="New badges"
+                  />
+                )}
             </NavLink>
           ))}
         {isTeamAdmin && (

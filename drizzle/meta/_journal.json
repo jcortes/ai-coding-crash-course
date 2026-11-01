@@ -57,6 +57,13 @@
       "when": 1793489636602,
       "tag": "0007_marvelous_rhodey",
       "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "6",
+      "when": 1793547047796,
+      "tag": "0008_bouncy_virginia_dare",
+      "breakpoints": true
     }
   ]
 }

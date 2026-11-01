@@ -13,6 +13,7 @@ import {
   TeamMemberRole,
 } from "../app/db/schema";
 import { calculatePppPrice } from "../app/lib/ppp";
+import { evaluateBadgesForUser } from "../app/services/badgeService";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -46,6 +47,7 @@ async function seed() {
 
   // Drop and recreate tables for a clean seed
   sqlite.exec(`
+    DROP TABLE IF EXISTS user_badges;
     DROP TABLE IF EXISTS lesson_comments;
     DROP TABLE IF EXISTS video_watch_events;
     DROP TABLE IF EXISTS quiz_answers;
@@ -1380,9 +1382,9 @@ You've completed the Building REST APIs course. You now have the skills to build
 
   // ─── Enrollments ───
   // Varied enrollment patterns:
-  // - Emma: enrolled in both courses (nearly complete in course 1, mid-way in course 2)
+  // - Emma: enrolled in both courses (completed course 1, mid-way in course 2)
   // - James: enrolled in course 1 only (completed)
-  // - Olivia: enrolled in both courses (just started course 1, mid-way in course 2)
+  // - Olivia: enrolled in both courses (one lesson left in course 1, mid-way in course 2)
   // - Liam: enrolled in course 2 only (just started, abandoned)
   // - Sophia: enrolled in course 1 only (recently enrolled, barely started)
 
@@ -1433,11 +1435,11 @@ You've completed the Building REST APIs course. You now have the skills to build
       .run();
   }
 
-  // Emma (students[0]) — nearly complete in course 1 (17 of 19 lessons done)
-  for (let i = 0; i < 17; i++) {
+  // Emma (students[0]) — completed every lesson of course 1. The badge pass at
+  // the end of the seed awards her the (unseen) course badge.
+  for (let i = 0; i < course1LessonIds.length; i++) {
     markComplete(students[0].id, course1LessonIds[i], 50 - i);
   }
-  markInProgress(students[0].id, course1LessonIds[17]);
 
   // Emma — mid-way through course 2 (10 of 20 lessons done)
   for (let i = 0; i < 10; i++) {
@@ -1450,11 +1452,13 @@ You've completed the Building REST APIs course. You now have the skills to build
     markComplete(students[1].id, course1LessonIds[i], 45 - i);
   }
 
-  // Olivia (students[2]) — just started course 1 (3 lessons done)
-  for (let i = 0; i < 3; i++) {
+  // Olivia (students[2]) — one lesson left in course 1. Marking the last
+  // lesson complete demos the live "Badge unlocked" toast.
+  const oliviaLastLesson = course1LessonIds.length - 1;
+  for (let i = 0; i < oliviaLastLesson; i++) {
     markComplete(students[2].id, course1LessonIds[i], 30 - i);
   }
-  markInProgress(students[2].id, course1LessonIds[3]);
+  markInProgress(students[2].id, course1LessonIds[oliviaLastLesson]);
 
   // Olivia — mid-way through course 2 (8 lessons done)
   for (let i = 0; i < 8; i++) {
@@ -2077,6 +2081,13 @@ You've completed the Building REST APIs course. You now have the skills to build
     `Created analytics demo data: ${demoUserCount} students, ${demoIndividualPurchases} individual purchases, ${demoTeamPurchases.length} team purchases (${demoCoupons} seats).`
   );
 
+  // ─── Badges ───
+  // Awarded from the progress above with the same logic a backfill uses, so
+  // dates are historical and every badge starts unseen.
+  for (const user of db.select({ id: schema.users.id }).from(schema.users).all()) {
+    evaluateBadgesForUser(user.id);
+  }
+
   const count = (table: string) =>
     (
       sqlite.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get() as {
@@ -2098,6 +2109,7 @@ You've completed the Building REST APIs course. You now have the skills to build
     `  Purchases: ${count("purchases")} (${count("purchases WHERE id NOT IN (SELECT purchase_id FROM coupons)")} individual + ${count("purchases WHERE id IN (SELECT purchase_id FROM coupons)")} team)`
   );
   console.log(`  Teams: ${count("teams")} (with ${count("coupons")} coupons)`);
+  console.log(`  Badges: ${count("user_badges")}`);
 }
 
 // Small deterministic PRNG so the seed produces the same data on every run

@@ -11,6 +11,8 @@ import { CourseImage } from "~/components/course-image";
 import { data, isRouteErrorResponse, redirect } from "react-router";
 import { getUserById } from "~/services/userService";
 import { UserRole } from "~/db/schema";
+import { getUserBadges, markBadgesSeen } from "~/services/badgeService";
+import { BADGE_CATALOG } from "~/lib/badges";
 
 export function meta() {
   return [
@@ -65,7 +67,61 @@ export async function loader({ request }: Route.LoaderArgs) {
   const completedCourses = coursesWithProgress.filter((c) => c.isCompleted);
   const inProgressCourses = coursesWithProgress.filter((c) => !c.isCompleted);
 
-  return { inProgressCourses, completedCourses };
+  // Read the badges before marking them seen so this visit still shows "New".
+  const badges = getUserBadges(currentUserId).map((b) => ({
+    id: b.id,
+    type: b.type,
+    title: b.title,
+    awardedAt: b.awardedAt,
+    isNew: b.seenAt === null,
+  }));
+  markBadgesSeen(currentUserId);
+
+  return { inProgressCourses, completedCourses, badges };
+}
+
+function MyBadges({
+  badges,
+}: {
+  badges: Route.ComponentProps["loaderData"]["badges"];
+}) {
+  return (
+    <section className="mb-8">
+      <h2 className="mb-4 text-xl font-semibold">My badges</h2>
+      <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {badges.map((badge) => {
+          const { name, icon: Icon, description } = BADGE_CATALOG[badge.type];
+          return (
+            <Card key={badge.id} className="flex-row items-center gap-4 p-4">
+              <div className="flex size-12 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
+                <Icon className="size-6" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <div className="flex items-center gap-2">
+                  <span className="font-semibold">{name}</span>
+                  {badge.isNew && (
+                    <span className="rounded-full bg-primary px-2 py-0.5 text-xs font-medium text-primary-foreground">
+                      New
+                    </span>
+                  )}
+                </div>
+                <p className="truncate text-sm" title={description}>
+                  {badge.title}
+                </p>
+                <p className="text-xs text-muted-foreground">
+                  {new Date(badge.awardedAt).toLocaleDateString(undefined, {
+                    year: "numeric",
+                    month: "short",
+                    day: "numeric",
+                  })}
+                </p>
+              </div>
+            </Card>
+          );
+        })}
+      </div>
+    </section>
+  );
 }
 
 function DashboardCardSkeleton() {
@@ -108,7 +164,7 @@ export function HydrateFallback() {
 }
 
 export default function Dashboard({ loaderData }: Route.ComponentProps) {
-  const { inProgressCourses, completedCourses } = loaderData;
+  const { inProgressCourses, completedCourses, badges } = loaderData;
   const totalCourses = inProgressCourses.length + completedCourses.length;
 
   return (
@@ -128,6 +184,8 @@ export default function Dashboard({ loaderData }: Route.ComponentProps) {
           Track your learning progress
         </p>
       </div>
+
+      {badges.length > 0 && <MyBadges badges={badges} />}
 
       {totalCourses === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">

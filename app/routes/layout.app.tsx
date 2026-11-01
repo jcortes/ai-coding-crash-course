@@ -1,4 +1,4 @@
-import { Outlet } from "react-router";
+import { Outlet, type ShouldRevalidateFunctionArgs } from "react-router";
 import type { Route } from "./+types/layout.app";
 import { Sidebar } from "~/components/sidebar";
 import { DevUI } from "~/components/dev-ui";
@@ -13,6 +13,18 @@ import {
 } from "~/services/progressService";
 import { getCountryTierInfo, COUNTRIES } from "~/lib/ppp";
 import { isTeamAdmin } from "~/services/teamService";
+import { hasUnseenBadges } from "~/services/badgeService";
+
+// The dashboard marks badges as seen, which changes the sidebar's unseen-badge
+// dot. Layout loaders don't re-run on plain navigations by default, so refresh
+// this one when the user leaves the dashboard.
+export function shouldRevalidate({
+  currentUrl,
+  defaultShouldRevalidate,
+}: ShouldRevalidateFunctionArgs) {
+  if (currentUrl.pathname === "/dashboard") return true;
+  return defaultShouldRevalidate;
+}
 
 export async function loader({ request }: Route.LoaderArgs) {
   const users = getAllUsers();
@@ -61,6 +73,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     countryTierInfo,
     countries: COUNTRIES,
     isTeamAdmin: currentUserId ? isTeamAdmin(currentUserId) : false,
+    hasUnseenBadges: currentUserId ? hasUnseenBadges(currentUserId) : false,
   };
 }
 
@@ -73,6 +86,7 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
     countryTierInfo,
     countries,
     isTeamAdmin: userIsTeamAdmin,
+    hasUnseenBadges: userHasUnseenBadges,
   } = loaderData;
 
   return (
@@ -81,6 +95,7 @@ export default function AppLayout({ loaderData }: Route.ComponentProps) {
         currentUser={currentUser}
         recentCourses={recentCourses}
         isTeamAdmin={userIsTeamAdmin}
+        hasUnseenBadges={userHasUnseenBadges}
       />
       <main className="flex-1 overflow-y-auto">
         <Outlet />

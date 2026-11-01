@@ -27,6 +27,8 @@ import {
 } from "~/services/quizService";
 import { computeResult } from "~/services/quizScoringService";
 import { getUserById } from "~/services/userService";
+import { evaluateBadgesForLesson } from "~/services/badgeService";
+import { badgeLabel } from "~/lib/badges";
 import { COMMENT_MAX_LENGTH } from "~/lib/comments";
 import {
   canDeleteComment,
@@ -418,7 +420,10 @@ export async function action({ params, request }: Route.ActionArgs) {
 
   if (intent === "mark-complete") {
     markLessonComplete(currentUserId, lessonId);
-    return { success: true };
+    const newBadges = evaluateBadgesForLesson(currentUserId, lessonId).map(
+      (b) => ({ id: b.id, type: b.type, title: b.title })
+    );
+    return { success: true, newBadges };
   }
 
   if (typeof intent === "string" && COMMENT_INTENTS.includes(intent)) {
@@ -579,6 +584,18 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
     fetcher.formData?.get("intent") === "mark-complete";
 
   const justCompleted = fetcher.data?.success;
+  const newBadges = fetcher.data?.newBadges;
+
+  // Announce badges earned by this completion. The Toaster lives in the app
+  // layout, so the toast survives the navigation to the next lesson below.
+  const announcedBadges = useRef<typeof newBadges>(undefined);
+  useEffect(() => {
+    if (!newBadges || announcedBadges.current === newBadges) return;
+    announcedBadges.current = newBadges;
+    for (const badge of newBadges) {
+      toast.success(`Badge unlocked: ${badgeLabel(badge)}`);
+    }
+  }, [newBadges]);
 
   const isCompleted =
     lessonStatus === LessonProgressStatus.Completed || justCompleted;
