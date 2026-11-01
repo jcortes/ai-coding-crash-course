@@ -16,11 +16,13 @@ import {
   getCourseBreakdown,
   getInstructorOverview,
   getEnrollmentSeries,
+  getLessonFunnel,
   getRevenueByCountry,
   getRevenueSeries,
   getRevenueSplit,
   parseAnalyticsRange,
   resolveAnalyticsInstructor,
+  resolveCourseAnalyticsAccess,
 } from "./instructorAnalyticsService";
 
 const NOW = new Date("2026-06-30T12:00:00.000Z");
@@ -174,6 +176,11 @@ function addLearner(opts: {
   return userId;
 }
 
+// Flattens a funnel to its lessons, in course order.
+function funnelLessons(funnel: ReturnType<typeof getLessonFunnel>) {
+  return funnel.modules.flatMap((m) => m.lessons);
+}
+
 describe("instructorAnalyticsService", () => {
   beforeEach(() => {
     testDb = createTestDb();
@@ -186,7 +193,7 @@ describe("instructorAnalyticsService", () => {
       addPurchase({ amountPaid: 3000, createdAt: daysAgo(10) });
       addPurchase({ amountPaid: 9999, createdAt: daysAgo(45) });
 
-      const overview = getInstructorOverview(base.instructor.id, "30d", NOW);
+      const overview = getInstructorOverview(base.instructor.id, "30d", null, NOW);
 
       expect(overview.current.revenue).toBe(8000);
       expect(overview.current.sales).toBe(2);
@@ -198,7 +205,7 @@ describe("instructorAnalyticsService", () => {
       addPurchase({ amountPaid: 1500, createdAt: daysAgo(13) });
       addPurchase({ amountPaid: 7777, createdAt: daysAgo(20) });
 
-      const overview = getInstructorOverview(base.instructor.id, "7d", NOW);
+      const overview = getInstructorOverview(base.instructor.id, "7d", null, NOW);
 
       expect(overview.current.revenue).toBe(5000);
       expect(overview.previous).toEqual(
@@ -210,7 +217,7 @@ describe("instructorAnalyticsService", () => {
       addPurchase({ amountPaid: 4000, createdAt: daysAgo(2) });
       addPurchase({ amountPaid: 25000, quantity: 5, createdAt: daysAgo(4) });
 
-      const overview = getInstructorOverview(base.instructor.id, "30d", NOW);
+      const overview = getInstructorOverview(base.instructor.id, "30d", null, NOW);
 
       expect(overview.current.sales).toBe(2);
       expect(overview.current.seats).toBe(6);
@@ -223,7 +230,7 @@ describe("instructorAnalyticsService", () => {
       addEnrollment({ enrolledAt: daysAgo(9) });
       addEnrollment({ enrolledAt: daysAgo(30) });
 
-      const overview = getInstructorOverview(base.instructor.id, "7d", NOW);
+      const overview = getInstructorOverview(base.instructor.id, "7d", null, NOW);
 
       expect(overview.current.newEnrollments).toBe(2);
       expect(overview.previous?.newEnrollments).toBe(1);
@@ -237,7 +244,7 @@ describe("instructorAnalyticsService", () => {
       addEnrollment({ courseId: draft.id, enrolledAt: daysAgo(1) });
       addEnrollment({ courseId: archived.id, enrolledAt: daysAgo(1) });
 
-      const overview = getInstructorOverview(base.instructor.id, "30d", NOW);
+      const overview = getInstructorOverview(base.instructor.id, "30d", null, NOW);
 
       expect(overview.current).toEqual({
         revenue: 2000,
@@ -257,10 +264,10 @@ describe("instructorAnalyticsService", () => {
       addPurchase({ courseId: otherCourse.id, amountPaid: 5000, createdAt: daysAgo(1) });
 
       expect(
-        getInstructorOverview(base.instructor.id, "30d", NOW).current.revenue
+        getInstructorOverview(base.instructor.id, "30d", null, NOW).current.revenue
       ).toBe(1000);
       expect(
-        getInstructorOverview(otherInstructor.id, "30d", NOW).current.revenue
+        getInstructorOverview(otherInstructor.id, "30d", null, NOW).current.revenue
       ).toBe(5000);
     });
 
@@ -270,16 +277,16 @@ describe("instructorAnalyticsService", () => {
       const archivedOnly = createUser(schema.UserRole.Instructor);
       createCourse(schema.CourseStatus.Archived, archivedOnly.id);
 
-      expect(getInstructorOverview(base.instructor.id, "30d", NOW).hasCourses).toBe(true);
-      expect(getInstructorOverview(draftOnly.id, "30d", NOW).hasCourses).toBe(false);
-      expect(getInstructorOverview(archivedOnly.id, "30d", NOW).hasCourses).toBe(true);
+      expect(getInstructorOverview(base.instructor.id, "30d", null, NOW).hasCourses).toBe(true);
+      expect(getInstructorOverview(draftOnly.id, "30d", null, NOW).hasCourses).toBe(false);
+      expect(getInstructorOverview(archivedOnly.id, "30d", null, NOW).hasCourses).toBe(true);
     });
 
     it("has no previous period for all time", () => {
       addPurchase({ amountPaid: 5000, createdAt: daysAgo(3) });
       addPurchase({ amountPaid: 2000, createdAt: daysAgo(400) });
 
-      const overview = getInstructorOverview(base.instructor.id, "all", NOW);
+      const overview = getInstructorOverview(base.instructor.id, "all", null, NOW);
 
       expect(overview.current.revenue).toBe(7000);
       expect(overview.current.sales).toBe(2);
@@ -289,7 +296,7 @@ describe("instructorAnalyticsService", () => {
     it("counts a purchase exactly on the period boundary in the current period only", () => {
       addPurchase({ amountPaid: 1000, createdAt: daysAgo(7) });
 
-      const overview = getInstructorOverview(base.instructor.id, "7d", NOW);
+      const overview = getInstructorOverview(base.instructor.id, "7d", null, NOW);
 
       expect(overview.current.revenue).toBe(1000);
       expect(overview.previous?.revenue).toBe(0);
@@ -299,7 +306,7 @@ describe("instructorAnalyticsService", () => {
       addPurchase({ amountPaid: 1000, createdAt: daysAgo(14) });
       addPurchase({ amountPaid: 2000, createdAt: daysAgo(14.0001) });
 
-      const overview = getInstructorOverview(base.instructor.id, "7d", NOW);
+      const overview = getInstructorOverview(base.instructor.id, "7d", null, NOW);
 
       expect(overview.previous?.revenue).toBe(1000);
     });
@@ -434,7 +441,7 @@ describe("instructorAnalyticsService", () => {
         team: { revenue: 31000, sales: 2, seats: 6 },
       });
       expect(split.individual.revenue + split.team.revenue).toBe(
-        getInstructorOverview(base.instructor.id, "30d", NOW).current.revenue
+        getInstructorOverview(base.instructor.id, "30d", null, NOW).current.revenue
       );
     });
   });
@@ -447,7 +454,7 @@ describe("instructorAnalyticsService", () => {
       addLearner({ completed: [a], inProgress: [b] });
       addLearner({ completed: [] });
 
-      const { completion } = getInstructorOverview(base.instructor.id, "30d", NOW);
+      const { completion } = getInstructorOverview(base.instructor.id, "30d", null, NOW);
 
       expect(completion.enrolledStudents).toBe(4);
       expect(completion.completionRate).toBe(0.25);
@@ -460,7 +467,7 @@ describe("instructorAnalyticsService", () => {
       addLearner({ completed: [] }); // 0%
       addLearner({ completed: [a, b] }); // 50%
 
-      const { completion } = getInstructorOverview(base.instructor.id, "30d", NOW);
+      const { completion } = getInstructorOverview(base.instructor.id, "30d", null, NOW);
 
       expect(completion.averageCompletion).toBeCloseTo(0.4375);
     });
@@ -472,7 +479,7 @@ describe("instructorAnalyticsService", () => {
       addLearner({ completed: [a] }); // finished, 100%
       addLearner({ courseId: other.id, completed: [x] }); // 50%
 
-      const { completion } = getInstructorOverview(base.instructor.id, "30d", NOW);
+      const { completion } = getInstructorOverview(base.instructor.id, "30d", null, NOW);
 
       expect(completion).toEqual({
         enrolledStudents: 2,
@@ -489,7 +496,7 @@ describe("instructorAnalyticsService", () => {
       addLearner({ userId: base.instructor.id, completed: [a, b] });
       addLearner({ userId: admin.id, completed: [a, b] });
 
-      const { completion } = getInstructorOverview(base.instructor.id, "30d", NOW);
+      const { completion } = getInstructorOverview(base.instructor.id, "30d", null, NOW);
 
       expect(completion).toEqual({
         enrolledStudents: 2,
@@ -503,7 +510,7 @@ describe("instructorAnalyticsService", () => {
       const otherInstructor = createUser(schema.UserRole.Instructor);
       addLearner({ userId: otherInstructor.id, completed: [a] });
 
-      const { completion } = getInstructorOverview(base.instructor.id, "30d", NOW);
+      const { completion } = getInstructorOverview(base.instructor.id, "30d", null, NOW);
 
       expect(completion.enrolledStudents).toBe(1);
     });
@@ -513,8 +520,8 @@ describe("instructorAnalyticsService", () => {
       addLearner({ completed: [a], enrolledAt: daysAgo(400) });
       addLearner({ completed: [], enrolledAt: daysAgo(2) });
 
-      const week = getInstructorOverview(base.instructor.id, "7d", NOW).completion;
-      const all = getInstructorOverview(base.instructor.id, "all", NOW).completion;
+      const week = getInstructorOverview(base.instructor.id, "7d", null, NOW).completion;
+      const all = getInstructorOverview(base.instructor.id, "all", null, NOW).completion;
 
       expect(week).toEqual({ enrolledStudents: 2, completionRate: 0.5, averageCompletion: 0.5 });
       expect(all).toEqual(week);
@@ -525,7 +532,7 @@ describe("instructorAnalyticsService", () => {
       const [a] = addLessons(draft.id, [1]);
       addLearner({ courseId: draft.id, completed: [a] });
 
-      const { completion } = getInstructorOverview(base.instructor.id, "30d", NOW);
+      const { completion } = getInstructorOverview(base.instructor.id, "30d", null, NOW);
 
       expect(completion).toEqual({
         enrolledStudents: 0,
@@ -540,7 +547,7 @@ describe("instructorAnalyticsService", () => {
       addLearner({ completed: [a] });
       addLearner({ courseId: empty.id });
 
-      const { completion } = getInstructorOverview(base.instructor.id, "30d", NOW);
+      const { completion } = getInstructorOverview(base.instructor.id, "30d", null, NOW);
 
       expect(completion).toEqual({
         enrolledStudents: 2,
@@ -555,7 +562,7 @@ describe("instructorAnalyticsService", () => {
       const [x] = addLessons(other.id, [1]);
       addLearner({ completed: [a, x] });
 
-      const { completion } = getInstructorOverview(base.instructor.id, "30d", NOW);
+      const { completion } = getInstructorOverview(base.instructor.id, "30d", null, NOW);
 
       expect(completion.averageCompletion).toBe(0.5);
     });
@@ -627,6 +634,29 @@ describe("instructorAnalyticsService", () => {
   });
 
   describe("course filtering", () => {
+    it("restricts the overview cards and completion to the given course", () => {
+      const other = createCourse(schema.CourseStatus.Published);
+      const [a] = addLessons(base.course.id, [1]);
+      const [x] = addLessons(other.id, [1]);
+      addPurchase({ amountPaid: 1000, createdAt: daysAgo(1) });
+      addPurchase({ courseId: other.id, amountPaid: 7000, createdAt: daysAgo(1) });
+      addPurchase({ courseId: other.id, amountPaid: 2000, createdAt: daysAgo(40) });
+      addLearner({ completed: [a], enrolledAt: daysAgo(1) });
+      addLearner({ courseId: other.id, completed: [x], enrolledAt: daysAgo(1) });
+      addLearner({ courseId: other.id, completed: [], enrolledAt: daysAgo(1) });
+
+      const overview = getInstructorOverview(base.instructor.id, "30d", other.id, NOW);
+
+      expect(overview.hasCourses).toBe(true);
+      expect(overview.current).toEqual({ revenue: 7000, sales: 1, seats: 1, newEnrollments: 2 });
+      expect(overview.previous).toEqual({ revenue: 2000, sales: 1, seats: 1, newEnrollments: 0 });
+      expect(overview.completion).toEqual({
+        enrolledStudents: 2,
+        completionRate: 0.5,
+        averageCompletion: 0.5,
+      });
+    });
+
     it("restricts both series to the given course", () => {
       const other = createCourse(schema.CourseStatus.Published);
       addPurchase({ amountPaid: 1000, createdAt: daysAgo(1) });
@@ -723,6 +753,239 @@ describe("instructorAnalyticsService", () => {
       expect(resolveAnalyticsInstructor(null, base.instructor.id)).toEqual({
         ok: false,
         reason: "unauthenticated",
+      });
+    });
+  });
+
+  describe("getLessonFunnel", () => {
+    it("lists lessons grouped by module in module-then-lesson position order", () => {
+      // Inserted out of order so ids and positions disagree.
+      const second = testDb
+        .insert(schema.modules)
+        .values({ courseId: base.course.id, title: "Second", position: 2 })
+        .returning()
+        .get();
+      const first = testDb
+        .insert(schema.modules)
+        .values({ courseId: base.course.id, title: "First", position: 1 })
+        .returning()
+        .get();
+      for (const [moduleId, title, position] of [
+        [second.id, "2.2", 2],
+        [second.id, "2.1", 1],
+        [first.id, "1.2", 2],
+        [first.id, "1.1", 1],
+      ] as const) {
+        testDb.insert(schema.lessons).values({ moduleId, title, position }).run();
+      }
+      const other = createCourse(schema.CourseStatus.Published);
+      addLessons(other.id, [1]);
+
+      const funnel = getLessonFunnel(base.course.id);
+
+      expect(
+        funnel.modules.map((m) => [m.title, m.lessons.map((l) => l.title)])
+      ).toEqual([
+        ["First", ["1.1", "1.2"]],
+        ["Second", ["2.1", "2.2"]],
+      ]);
+    });
+
+    it("counts students who reached and completed each lesson, with shares of enrolled students", () => {
+      const [a, b, c, d] = addLessons(base.course.id, [2, 2]);
+      addLearner({ completed: [a, b, c, d] });
+      addLearner({ completed: [a], inProgress: [b] });
+      addLearner({ inProgress: [a] });
+      const idle = addLearner({});
+      testDb
+        .insert(schema.lessonProgress)
+        .values({ userId: idle, lessonId: a, status: schema.LessonProgressStatus.NotStarted })
+        .run();
+      // Progress without an enrollment doesn't count.
+      const visitor = createStudent();
+      testDb
+        .insert(schema.lessonProgress)
+        .values({ userId: visitor.id, lessonId: a, status: schema.LessonProgressStatus.Completed })
+        .run();
+
+      const funnel = getLessonFunnel(base.course.id);
+
+      expect(funnel.students).toBe(4);
+      expect(
+        funnelLessons(funnel).map((l) => [
+          l.reached,
+          l.reachedShare,
+          l.completed,
+          l.completedShare,
+        ])
+      ).toEqual([
+        [3, 0.75, 2, 0.5],
+        [2, 0.5, 1, 0.25],
+        [1, 0.25, 1, 0.25],
+        [1, 0.25, 1, 0.25],
+      ]);
+    });
+
+    it("leaves out the course's own instructor and admins", () => {
+      const [a] = addLessons(base.course.id, [1]);
+      const admin = createUser(schema.UserRole.Admin);
+      const otherInstructor = createUser(schema.UserRole.Instructor);
+      addLearner({ completed: [] });
+      addLearner({ userId: otherInstructor.id, completed: [a] });
+      addLearner({ userId: base.instructor.id, completed: [a] });
+      addLearner({ userId: admin.id, completed: [a] });
+
+      const funnel = getLessonFunnel(base.course.id);
+
+      expect(funnel.students).toBe(2);
+      expect(funnelLessons(funnel)[0]).toMatchObject({ reached: 1, completed: 1 });
+    });
+
+    it("reports each lesson's drop from the previous lesson and flags the three steepest", () => {
+      const ids = addLessons(base.course.id, [3, 2]);
+      // How many of the 10 students reached each lesson: 10, 9, 4, 3, 1.
+      const reachedBy = [10, 9, 4, 3, 1];
+      for (let s = 0; s < 10; s++) {
+        addLearner({ completed: ids.filter((_, i) => s < reachedBy[i]) });
+      }
+
+      const lessons = funnelLessons(getLessonFunnel(base.course.id));
+
+      expect(lessons.map((l) => (l.drop === null ? null : Math.round(l.drop * 100)))).toEqual([
+        null, 10, 50, 10, 20,
+      ]);
+      // Steepest: 50 and 20, then the earlier of the two tied 10s.
+      expect(lessons.map((l) => l.steepestDrop)).toEqual([false, true, true, false, true]);
+    });
+
+    it("flags only lessons that actually lose students", () => {
+      const [a, b, c] = addLessons(base.course.id, [3]);
+      addLearner({ completed: [a, b, c] });
+      addLearner({ completed: [a, c] }); // skipped b
+      addLearner({ completed: [a] });
+
+      const lessons = funnelLessons(getLessonFunnel(base.course.id));
+
+      // Reached: 3, 1, 2. Only b loses students; c gains one back.
+      expect(lessons.map((l) => l.steepestDrop)).toEqual([false, true, false]);
+    });
+
+    it("reports the quiz pass rate among students who attempted a lesson's quiz", () => {
+      const [a, b] = addLessons(base.course.id, [2]);
+      const quiz = testDb
+        .insert(schema.quizzes)
+        .values({ lessonId: a, title: "Quiz", passingScore: 0.7 })
+        .returning()
+        .get();
+      const attempt = (userId: number, passed: boolean) =>
+        testDb
+          .insert(schema.quizAttempts)
+          .values({ userId, quizId: quiz.id, score: passed ? 0.9 : 0.3, passed })
+          .run();
+      const admin = createUser(schema.UserRole.Admin);
+      const passedFirstTime = addLearner({ completed: [a] });
+      const passedOnRetry = addLearner({ completed: [a] });
+      const neverPassed = addLearner({ completed: [a] });
+      addLearner({ completed: [a] }); // never attempted
+      addLearner({ userId: admin.id, completed: [a] });
+      attempt(passedFirstTime, true);
+      attempt(passedOnRetry, false);
+      attempt(passedOnRetry, true);
+      attempt(neverPassed, false);
+      attempt(neverPassed, false);
+      attempt(admin.id, true);
+
+      const [withQuiz, withoutQuiz] = funnelLessons(getLessonFunnel(base.course.id));
+
+      expect(withQuiz.quiz).toEqual({ attempted: 3, passed: 2, passRate: 2 / 3 });
+      expect(withoutQuiz.quiz).toBeNull();
+    });
+
+    it("shows no pass rate for a quiz nobody has attempted", () => {
+      const [a] = addLessons(base.course.id, [1]);
+      testDb.insert(schema.quizzes).values({ lessonId: a, title: "Quiz", passingScore: 0.7 }).run();
+      addLearner({ completed: [a] });
+
+      const [lesson] = funnelLessons(getLessonFunnel(base.course.id));
+
+      expect(lesson.quiz).toEqual({ attempted: 0, passed: 0, passRate: null });
+    });
+
+    it("has null shares when no students count", () => {
+      addLessons(base.course.id, [1]);
+
+      const funnel = getLessonFunnel(base.course.id);
+
+      expect(funnel.students).toBe(0);
+      expect(funnelLessons(funnel)[0]).toMatchObject({
+        reached: 0,
+        reachedShare: null,
+        completed: 0,
+        completedShare: null,
+        drop: null,
+        steepestDrop: false,
+      });
+    });
+  });
+
+  describe("resolveCourseAnalyticsAccess", () => {
+    it("lets the course owner in, with the course and its instructor", () => {
+      expect(resolveCourseAnalyticsAccess(base.instructor.id, base.course.id)).toEqual({
+        ok: true,
+        course: {
+          id: base.course.id,
+          title: base.course.title,
+          status: schema.CourseStatus.Published,
+        },
+        instructor: { id: base.instructor.id, name: base.instructor.name },
+        viewerIsAdmin: false,
+      });
+    });
+
+    it("lets an admin into any course", () => {
+      const admin = createUser(schema.UserRole.Admin);
+
+      const access = resolveCourseAnalyticsAccess(admin.id, base.course.id);
+
+      expect(access).toMatchObject({
+        ok: true,
+        instructor: { id: base.instructor.id },
+        viewerIsAdmin: true,
+      });
+    });
+
+    it("rejects other instructors and students", () => {
+      const other = createUser(schema.UserRole.Instructor);
+
+      expect(resolveCourseAnalyticsAccess(other.id, base.course.id)).toEqual({
+        ok: false,
+        reason: "forbidden",
+      });
+      expect(resolveCourseAnalyticsAccess(base.user.id, base.course.id)).toEqual({
+        ok: false,
+        reason: "forbidden",
+      });
+    });
+
+    it("rejects a student even when enrolled in the course", () => {
+      addLearner({ userId: base.user.id });
+
+      expect(resolveCourseAnalyticsAccess(base.user.id, base.course.id)).toEqual({
+        ok: false,
+        reason: "forbidden",
+      });
+    });
+
+    it("rejects anonymous viewers and unknown courses", () => {
+      const admin = createUser(schema.UserRole.Admin);
+
+      expect(resolveCourseAnalyticsAccess(null, base.course.id)).toEqual({
+        ok: false,
+        reason: "unauthenticated",
+      });
+      expect(resolveCourseAnalyticsAccess(admin.id, 99999)).toEqual({
+        ok: false,
+        reason: "not_found",
       });
     });
   });

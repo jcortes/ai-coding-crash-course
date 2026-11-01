@@ -11,6 +11,8 @@ import {
   lessons,
   modules,
   purchases,
+  quizAttempts,
+  quizzes,
   UserRole,
   users,
 } from "~/db/schema";
@@ -68,6 +70,54 @@ export function resolveAnalyticsInstructor(
   return { ok: true, instructor: { id: target.id, name: target.name } };
 }
 
+export type CourseAnalyticsAccess =
+  | {
+      ok: true;
+      course: { id: number; title: string; status: CourseStatus };
+      instructor: { id: number; name: string };
+      viewerIsAdmin: boolean;
+    }
+  | { ok: false; reason: "unauthenticated" | "forbidden" | "not_found" };
+
+// A course's analytics are open to its owner and to admins only.
+export function resolveCourseAnalyticsAccess(
+  viewerId: number | null,
+  courseId: number
+): CourseAnalyticsAccess {
+  if (viewerId === null) return { ok: false, reason: "unauthenticated" };
+
+  const viewer = getUserById(viewerId);
+  if (!viewer) return { ok: false, reason: "unauthenticated" };
+
+  const course = db
+    .select({
+      id: courses.id,
+      title: courses.title,
+      status: courses.status,
+      instructorId: courses.instructorId,
+    })
+    .from(courses)
+    .where(eq(courses.id, courseId))
+    .get();
+  if (!course) return { ok: false, reason: "not_found" };
+
+  const isOwner =
+    viewer.role === UserRole.Instructor && course.instructorId === viewer.id;
+  if (!isOwner && viewer.role !== UserRole.Admin) {
+    return { ok: false, reason: "forbidden" };
+  }
+
+  const instructor = getUserById(course.instructorId);
+  if (!instructor) return { ok: false, reason: "not_found" };
+
+  return {
+    ok: true,
+    course: { id: course.id, title: course.title, status: course.status },
+    instructor: { id: instructor.id, name: instructor.name },
+    viewerIsAdmin: viewer.role === UserRole.Admin,
+  };
+}
+
 const RANGE_DAYS: Record<Exclude<AnalyticsRange, "all">, number> = {
   "7d": 7,
   "30d": 30,
@@ -115,7 +165,11 @@ function withinWindow(column: SQLiteColumn, window: DateWindow) {
   return and(...conditions);
 }
 
-function getRevenueAndSales(instructorId: number, window: DateWindow) {
+function getRevenueAndSales(
+  instructorId: number,
+  courseId: number | null,
+  window: DateWindow
+) {
   const row = db
     .select({
       revenue: sql<number>`coalesce(sum(${purchases.amountPaid}), 0)`,
@@ -126,7 +180,7 @@ function getRevenueAndSales(instructorId: number, window: DateWindow) {
     .innerJoin(courses, eq(purchases.courseId, courses.id))
     .where(
       and(
-        countedCoursesOf(instructorId),
+        countedCourseScope(instructorId, courseId),
         withinWindow(purchases.createdAt, window)
       )
     )
@@ -139,14 +193,18 @@ function getRevenueAndSales(instructorId: number, window: DateWindow) {
   };
 }
 
-function getNewEnrollments(instructorId: number, window: DateWindow) {
+function getNewEnrollments(
+  instructorId: number,
+  courseId: number | null,
+  window: DateWindow
+) {
   const row = db
     .select({ count: sql<number>`count(${enrollments.id})` })
     .from(enrollments)
     .innerJoin(courses, eq(enrollments.courseId, courses.id))
     .where(
       and(
-        countedCoursesOf(instructorId),
+        countedCourseScope(instructorId, courseId),
         withinWindow(enrollments.enrolledAt, window)
       )
     )
@@ -155,18 +213,22 @@ function getNewEnrollments(instructorId: number, window: DateWindow) {
   return row?.count ?? 0;
 }
 
-function getPeriodTotals(instructorId: number, window: DateWindow) {
+function getPeriodTotals(
+  instructorId: number,
+  courseId: number | null,
+  window: DateWindow
+) {
   return {
-    ...getRevenueAndSales(instructorId, window),
-    newEnrollments: getNewEnrollments(instructorId, window),
+    ...getRevenueAndSales(instructorId, courseId, window),
+    newEnrollments: getNewEnrollments(instructorId, courseId, window),
   };
 }
 
-function hasCountedCourses(instructorId: number) {
+function hasCountedCourses(instructorId: number, courseId: number | null) {
   const row = db
     .select({ id: courses.id })
     .from(courses)
-    .where(countedCoursesOf(instructorId))
+    .where(countedCourseScope(instructorId, courseId))
     .limit(1)
     .get();
   return row !== undefined;
@@ -207,10 +269,23 @@ function toCompletionMetrics(totals: CompletionTotals): CompletionMetrics {
   };
 }
 
-// Completion totals per counted course of the instructor, ignoring any date
-// range. The course's own instructor and admins are left out. A course with no
+// Who counts in completion and funnel numbers: every enrolled student except
+// the course's own instructor and admins. Needs `courses` and `users` joined
+// onto `enrollments`.
+function isCountedLearner() {
+  return and(
+    ne(enrollments.userId, courses.instructorId),
+    ne(users.role, UserRole.Admin)
+  );
+}
+
+// Completion totals per counted course of the instructor (or just `courseId`),
+// ignoring any date range. The course's own instructor and admins are left out. A course with no
 // lessons has nothing to finish, so its students count as 0% complete.
-function getCompletionTotalsByCourse(instructorId: number) {
+function getCompletionTotalsByCourse(
+  instructorId: number,
+  courseId: number | null = null
+) {
   const totalLessons = sql<number>`(
     select count(*) from ${lessons}
     inner join ${modules} on ${lessons.moduleId} = ${modules.id}
@@ -236,9 +311,8 @@ function getCompletionTotalsByCourse(instructorId: number) {
     .innerJoin(users, eq(enrollments.userId, users.id))
     .where(
       and(
-        countedCoursesOf(instructorId),
-        ne(enrollments.userId, courses.instructorId),
-        ne(users.role, UserRole.Admin)
+        countedCourseScope(instructorId, courseId),
+        isCountedLearner()
       )
     )
     .as("per_enrollment");
@@ -255,8 +329,11 @@ function getCompletionTotalsByCourse(instructorId: number) {
     .all();
 }
 
-function getCompletionMetrics(instructorId: number): CompletionMetrics {
-  const totals = getCompletionTotalsByCourse(instructorId).reduce<CompletionTotals>(
+function getCompletionMetrics(
+  instructorId: number,
+  courseId: number | null
+): CompletionMetrics {
+  const totals = getCompletionTotalsByCourse(instructorId, courseId).reduce<CompletionTotals>(
     (sum, row) => ({
       students: sum.students + row.students,
       finished: sum.finished + row.finished,
@@ -267,19 +344,22 @@ function getCompletionMetrics(instructorId: number): CompletionMetrics {
   return toCompletionMetrics(totals);
 }
 
+// Headline numbers for the instructor's counted courses, or for just
+// `courseId` when given.
 export function getInstructorOverview(
   instructorId: number,
   range: AnalyticsRange,
+  courseId: number | null = null,
   now: Date = new Date()
 ) {
   const windows = getWindows(range, now);
   return {
-    hasCourses: hasCountedCourses(instructorId),
-    current: getPeriodTotals(instructorId, windows.current),
+    hasCourses: hasCountedCourses(instructorId, courseId),
+    current: getPeriodTotals(instructorId, courseId, windows.current),
     previous: windows.previous
-      ? getPeriodTotals(instructorId, windows.previous)
+      ? getPeriodTotals(instructorId, courseId, windows.previous)
       : null,
-    completion: getCompletionMetrics(instructorId),
+    completion: getCompletionMetrics(instructorId, courseId),
   };
 }
 
@@ -598,4 +678,160 @@ export function getCourseBreakdown(
       };
     })
     .sort((a, b) => b.revenue - a.revenue || a.title.localeCompare(b.title));
+}
+
+// ─── Lesson funnel (always all-time) ───
+
+// Enrolled students of the course whose progress counts in the funnel.
+function countedLearnerIds(courseId: number) {
+  return db
+    .selectDistinct({ userId: enrollments.userId })
+    .from(enrollments)
+    .innerJoin(courses, eq(enrollments.courseId, courses.id))
+    .innerJoin(users, eq(enrollments.userId, users.id))
+    .where(
+      and(
+        eq(enrollments.courseId, courseId),
+        isCountedLearner()
+      )
+    );
+}
+
+const STEEPEST_DROPS = 3;
+
+export interface FunnelLesson {
+  id: number;
+  title: string;
+  reached: number;
+  reachedShare: number | null;
+  completed: number;
+  completedShare: number | null;
+  /** Fall in reached share (0–1) since the previous lesson; null for the first. */
+  drop: number | null;
+  /** One of the (up to) three lessons losing the most students. */
+  steepestDrop: boolean;
+  /** Present when the lesson has a quiz; the rate is null until attempted. */
+  quiz: { attempted: number; passed: number; passRate: number | null } | null;
+}
+
+function share(count: number, total: number): number | null {
+  return total > 0 ? count / total : null;
+}
+
+export function getLessonFunnel(courseId: number) {
+  const learnerIds = countedLearnerIds(courseId);
+  const learners = learnerIds.as("learners");
+  const students =
+    db.select({ count: sql<number>`count(*)` }).from(learners).get()?.count ??
+    0;
+
+  const lessonRows = db
+    .select({
+      id: lessons.id,
+      title: lessons.title,
+      moduleId: modules.id,
+      moduleTitle: modules.title,
+    })
+    .from(lessons)
+    .innerJoin(modules, eq(lessons.moduleId, modules.id))
+    .where(eq(modules.courseId, courseId))
+    .orderBy(modules.position, modules.id, lessons.position, lessons.id)
+    .all();
+
+  const progressByLesson = new Map(
+    db
+      .select({
+        lessonId: lessonProgress.lessonId,
+        reached: sql<number>`count(distinct case when ${lessonProgress.status} in (${LessonProgressStatus.InProgress}, ${LessonProgressStatus.Completed}) then ${lessonProgress.userId} end)`,
+        completed: sql<number>`count(distinct case when ${lessonProgress.status} = ${LessonProgressStatus.Completed} then ${lessonProgress.userId} end)`,
+      })
+      .from(lessonProgress)
+      .innerJoin(lessons, eq(lessonProgress.lessonId, lessons.id))
+      .innerJoin(modules, eq(lessons.moduleId, modules.id))
+      .where(
+        and(
+          eq(modules.courseId, courseId),
+          inArray(lessonProgress.userId, learnerIds)
+        )
+      )
+      .groupBy(lessonProgress.lessonId)
+      .all()
+      .map((row) => [row.lessonId, row])
+  );
+
+  // Per lesson with a quiz: counted students who attempted any of its quizzes,
+  // and those with at least one passing attempt.
+  const quizByLesson = new Map(
+    db
+      .select({
+        lessonId: quizzes.lessonId,
+        attempted: sql<number>`count(distinct ${quizAttempts.userId})`,
+        passed: sql<number>`count(distinct case when ${quizAttempts.passed} then ${quizAttempts.userId} end)`,
+      })
+      .from(quizzes)
+      .innerJoin(lessons, eq(quizzes.lessonId, lessons.id))
+      .innerJoin(modules, eq(lessons.moduleId, modules.id))
+      .leftJoin(
+        quizAttempts,
+        and(
+          eq(quizAttempts.quizId, quizzes.id),
+          inArray(quizAttempts.userId, learnerIds)
+        )
+      )
+      .where(eq(modules.courseId, courseId))
+      .groupBy(quizzes.lessonId)
+      .all()
+      .map((row) => [
+        row.lessonId,
+        {
+          attempted: row.attempted,
+          passed: row.passed,
+          passRate: share(row.passed, row.attempted),
+        },
+      ])
+  );
+
+  const funnelLessons = lessonRows.map((row, index) => {
+    const reached = progressByLesson.get(row.id)?.reached ?? 0;
+    const completed = progressByLesson.get(row.id)?.completed ?? 0;
+    const previousReached =
+      index > 0 ? (progressByLesson.get(lessonRows[index - 1].id)?.reached ?? 0) : null;
+    const lostStudents =
+      previousReached === null ? null : previousReached - reached;
+    return {
+      ...row,
+      reached,
+      reachedShare: share(reached, students),
+      completed,
+      completedShare: share(completed, students),
+      lostStudents,
+      drop: lostStudents === null ? null : share(lostStudents, students),
+      steepestDrop: false,
+      quiz: quizByLesson.get(row.id) ?? null,
+    };
+  });
+
+  // Flag the (up to) three lessons that lose the most students; ties go to
+  // the earlier lesson. Lessons that lose nobody are never flagged.
+  funnelLessons
+    .filter((l) => l.lostStudents !== null && l.lostStudents > 0)
+    .sort((a, b) => b.lostStudents! - a.lostStudents!)
+    .slice(0, STEEPEST_DROPS)
+    .forEach((l) => (l.steepestDrop = true));
+
+  const funnelModules: {
+    id: number;
+    title: string;
+    lessons: FunnelLesson[];
+  }[] = [];
+  for (const { moduleId, moduleTitle, lostStudents: _, ...lesson } of funnelLessons) {
+    let mod = funnelModules.at(-1);
+    if (!mod || mod.id !== moduleId) {
+      mod = { id: moduleId, title: moduleTitle, lessons: [] };
+      funnelModules.push(mod);
+    }
+    mod.lessons.push(lesson);
+  }
+
+  return { students, modules: funnelModules };
 }

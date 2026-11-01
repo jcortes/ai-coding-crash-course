@@ -1,6 +1,20 @@
-import { ArrowDownRight, ArrowUpRight, Minus } from "lucide-react";
+import { Link } from "react-router";
+import {
+  ArrowDownRight,
+  ArrowUpRight,
+  DollarSign,
+  Minus,
+  ShoppingCart,
+  UserPlus,
+  Users,
+} from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { cn } from "~/lib/utils";
+import {
+  ANALYTICS_RANGES,
+  type AnalyticsRange,
+  type getInstructorOverview,
+} from "~/services/instructorAnalyticsService";
 
 /** Formats USD cents as "$1,234.56" (0 renders as "$0.00", not "Free"). */
 export function formatRevenue(cents: number): string {
@@ -91,5 +105,81 @@ export function StatCard({
         </div>
       </CardContent>
     </Card>
+  );
+}
+
+const RANGE_LABELS: Record<AnalyticsRange, string> = {
+  "7d": "7 days",
+  "30d": "30 days",
+  "90d": "90 days",
+  all: "All time",
+};
+
+export function RangePicker({
+  range,
+  hrefFor,
+}: {
+  range: AnalyticsRange;
+  hrefFor: (range: AnalyticsRange) => string;
+}) {
+  return (
+    <div className="inline-flex rounded-md border border-border p-1">
+      {ANALYTICS_RANGES.map((r) => (
+        <Link
+          key={r}
+          to={hrefFor(r)}
+          preventScrollReset
+          className={cn(
+            "rounded px-3 py-1.5 text-sm font-medium transition-colors",
+            r === range
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:text-foreground"
+          )}
+        >
+          {RANGE_LABELS[r]}
+        </Link>
+      ))}
+    </div>
+  );
+}
+
+type Overview = ReturnType<typeof getInstructorOverview>;
+
+/** Revenue, sales, seats and new enrollments, each vs the previous period. */
+export function HeadlineCards({
+  current,
+  previous,
+}: Pick<Overview, "current" | "previous">) {
+  return (
+    <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
+      <StatCard
+        title="Revenue"
+        value={formatRevenue(current.revenue)}
+        current={current.revenue}
+        previous={previous?.revenue ?? null}
+        icon={<DollarSign className="size-4" />}
+      />
+      <StatCard
+        title="Sales"
+        value={formatCount(current.sales)}
+        current={current.sales}
+        previous={previous?.sales ?? null}
+        icon={<ShoppingCart className="size-4" />}
+      />
+      <StatCard
+        title="Seats"
+        value={formatCount(current.seats)}
+        current={current.seats}
+        previous={previous?.seats ?? null}
+        icon={<Users className="size-4" />}
+      />
+      <StatCard
+        title="New enrollments"
+        value={formatCount(current.newEnrollments)}
+        current={current.newEnrollments}
+        previous={previous?.newEnrollments ?? null}
+        icon={<UserPlus className="size-4" />}
+      />
+    </div>
   );
 }

@@ -1,4 +1,6 @@
+import { Link } from "react-router";
 import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
+import { AlertTriangle } from "lucide-react";
 import {
   Card,
   CardContent,
@@ -22,16 +24,19 @@ import {
 } from "~/components/ui/table";
 import { CourseStatus } from "~/db/schema";
 import { COUNTRIES } from "~/lib/ppp";
+import { cn } from "~/lib/utils";
 import {
   formatCount,
   formatPercent,
   formatRevenue,
 } from "~/components/analytics";
 import type {
+  AnalyticsRange,
   BucketSize,
   CompletionMetrics,
   getCourseBreakdown,
   getEnrollmentSeries,
+  getLessonFunnel,
   getRevenueByCountry,
   getRevenueSeries,
   getRevenueSplit,
@@ -356,8 +361,10 @@ export function CompletionCard({
 
 export function CourseBreakdownTable({
   rows,
+  range,
 }: {
   rows: ReturnType<typeof getCourseBreakdown>;
+  range: AnalyticsRange;
 }) {
   return (
     <Card>
@@ -384,7 +391,12 @@ export function CourseBreakdownTable({
             {rows.map((row) => (
               <TableRow key={row.courseId}>
                 <TableCell className="font-medium">
-                  {row.title}
+                  <Link
+                    to={`/instructor/${row.courseId}/analytics?range=${range}`}
+                    className="hover:underline"
+                  >
+                    {row.title}
+                  </Link>
                   {row.status === CourseStatus.Archived && (
                     <span className="ml-2 text-xs font-normal text-muted-foreground">
                       Archived
@@ -410,6 +422,124 @@ export function CourseBreakdownTable({
             ))}
           </TableBody>
         </Table>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Below this many counted students the funnel is flagged as noisy. */
+const SMALL_SAMPLE = 5;
+
+export function LessonFunnel({
+  students,
+  modules,
+}: ReturnType<typeof getLessonFunnel>) {
+  const hasLessons = modules.some((m) => m.lessons.length > 0);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Lesson drop-off</CardTitle>
+        <CardDescription>
+          All time · share of {formatCount(students)} enrolled{" "}
+          {students === 1 ? "student" : "students"} who reached and completed
+          each lesson (not affected by the date range)
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-6">
+        {students < SMALL_SAMPLE && (
+          <p className="flex items-center gap-2 rounded-md border border-border bg-muted/50 px-3 py-2 text-sm text-muted-foreground">
+            <AlertTriangle className="size-4 shrink-0" />
+            Small sample: fewer than {SMALL_SAMPLE} students count, so these
+            percentages can swing a lot.
+          </p>
+        )}
+
+        {!hasLessons ? (
+          <p className="text-sm text-muted-foreground">
+            This course has no lessons yet.
+          </p>
+        ) : (
+          <>
+            <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <span className="size-3 rounded-sm bg-primary/30" /> Reached
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="size-3 rounded-sm bg-primary" /> Completed
+              </span>
+              <span className="flex items-center gap-1.5">
+                <span className="size-3 rounded-sm bg-red-500/80" /> Steepest
+                drop
+              </span>
+            </div>
+
+            {modules.map((mod) => (
+              <section key={mod.id}>
+                <h3 className="mb-2 text-sm font-semibold">{mod.title}</h3>
+                <ol className="space-y-2">
+                  {mod.lessons.map((lesson) => (
+                    <li
+                      key={lesson.id}
+                      className={cn(
+                        "rounded-md px-2 py-1.5",
+                        lesson.steepestDrop &&
+                          "bg-red-50 ring-1 ring-red-200 dark:bg-red-950/30 dark:ring-red-900"
+                      )}
+                    >
+                      <div className="mb-1 flex flex-wrap items-baseline justify-between gap-x-4 text-sm">
+                        <span className="font-medium">{lesson.title}</span>
+                        <span className="flex flex-wrap gap-x-3 text-xs text-muted-foreground">
+                          <span>
+                            Reached {formatCount(lesson.reached)} (
+                            {formatPercent(lesson.reachedShare)})
+                          </span>
+                          <span>
+                            Completed {formatCount(lesson.completed)} (
+                            {formatPercent(lesson.completedShare)})
+                          </span>
+                          {lesson.drop !== null && lesson.drop > 0 && (
+                            <span
+                              className={cn(
+                                lesson.steepestDrop &&
+                                  "font-medium text-red-700 dark:text-red-400"
+                              )}
+                            >
+                              −{Math.round(lesson.drop * 100)} pts from previous
+                            </span>
+                          )}
+                          {lesson.quiz && (
+                            <span>
+                              Quiz pass rate {formatPercent(lesson.quiz.passRate)}
+                              {lesson.quiz.attempted > 0 &&
+                                ` (${formatCount(lesson.quiz.passed)}/${formatCount(lesson.quiz.attempted)})`}
+                            </span>
+                          )}
+                        </span>
+                      </div>
+                      <div className="relative h-3 overflow-hidden rounded-full bg-muted">
+                        <div
+                          className={cn(
+                            "absolute inset-y-0 left-0 rounded-full",
+                            lesson.steepestDrop ? "bg-red-500/30" : "bg-primary/30"
+                          )}
+                          style={{ width: `${(lesson.reachedShare ?? 0) * 100}%` }}
+                        />
+                        <div
+                          className={cn(
+                            "absolute inset-y-0 left-0 rounded-full",
+                            lesson.steepestDrop ? "bg-red-500/80" : "bg-primary"
+                          )}
+                          style={{ width: `${(lesson.completedShare ?? 0) * 100}%` }}
+                        />
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              </section>
+            ))}
+          </>
+        )}
       </CardContent>
     </Card>
   );

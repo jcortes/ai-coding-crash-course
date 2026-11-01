@@ -2,7 +2,6 @@ import { Link, data, isRouteErrorResponse } from "react-router";
 import type { Route } from "./+types/instructor.analytics";
 import { getCurrentUserId } from "~/lib/session";
 import {
-  ANALYTICS_RANGES,
   getCourseBreakdown,
   getEnrollmentSeries,
   getInstructorOverview,
@@ -13,7 +12,7 @@ import {
   resolveAnalyticsInstructor,
   type AnalyticsRange,
 } from "~/services/instructorAnalyticsService";
-import { StatCard, formatCount, formatRevenue } from "~/components/analytics";
+import { HeadlineCards, RangePicker } from "~/components/analytics";
 import {
   CompletionCard,
   CourseBreakdownTable,
@@ -25,23 +24,7 @@ import {
 import { Button } from "~/components/ui/button";
 import { Card } from "~/components/ui/card";
 import { Skeleton } from "~/components/ui/skeleton";
-import { cn } from "~/lib/utils";
-import {
-  AlertTriangle,
-  BarChart3,
-  DollarSign,
-  GraduationCap,
-  ShoppingCart,
-  Users,
-  UserPlus,
-} from "lucide-react";
-
-const RANGE_LABELS: Record<AnalyticsRange, string> = {
-  "7d": "7 days",
-  "30d": "30 days",
-  "90d": "90 days",
-  all: "All time",
-};
+import { AlertTriangle, BarChart3, GraduationCap } from "lucide-react";
 
 export function meta() {
   return [
@@ -174,23 +157,7 @@ export default function InstructorAnalytics({
         </div>
 
         {overview.hasCourses && (
-          <div className="inline-flex rounded-md border border-border p-1">
-            {ANALYTICS_RANGES.map((r) => (
-              <Link
-                key={r}
-                to={rangeHref(r)}
-                preventScrollReset
-                className={cn(
-                  "rounded px-3 py-1.5 text-sm font-medium transition-colors",
-                  r === range
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:text-foreground"
-                )}
-              >
-                {RANGE_LABELS[r]}
-              </Link>
-            ))}
-          </div>
+          <RangePicker range={range} hrefFor={rangeHref} />
         )}
       </div>
 
@@ -213,36 +180,7 @@ export default function InstructorAnalytics({
         </Card>
       ) : (
         <div className="space-y-6">
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-            <StatCard
-              title="Revenue"
-              value={formatRevenue(current.revenue)}
-              current={current.revenue}
-              previous={previous?.revenue ?? null}
-              icon={<DollarSign className="size-4" />}
-            />
-            <StatCard
-              title="Sales"
-              value={formatCount(current.sales)}
-              current={current.sales}
-              previous={previous?.sales ?? null}
-              icon={<ShoppingCart className="size-4" />}
-            />
-            <StatCard
-              title="Seats"
-              value={formatCount(current.seats)}
-              current={current.seats}
-              previous={previous?.seats ?? null}
-              icon={<Users className="size-4" />}
-            />
-            <StatCard
-              title="New enrollments"
-              value={formatCount(current.newEnrollments)}
-              current={current.newEnrollments}
-              previous={previous?.newEnrollments ?? null}
-              icon={<UserPlus className="size-4" />}
-            />
-          </div>
+          <HeadlineCards current={current} previous={previous} />
 
           <div className="grid gap-4 lg:grid-cols-2">
             <RevenueChart {...revenueSeries} />
@@ -251,7 +189,7 @@ export default function InstructorAnalytics({
 
           <div className="grid gap-4 lg:grid-cols-3">
             <div className="lg:col-span-2">
-              <CourseBreakdownTable rows={courseBreakdown} />
+              <CourseBreakdownTable rows={courseBreakdown} range={range} />
             </div>
             <CompletionCard {...overview.completion} />
           </div>
