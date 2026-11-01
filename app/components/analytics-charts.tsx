@@ -20,10 +20,17 @@ import {
   TableHeader,
   TableRow,
 } from "~/components/ui/table";
+import { CourseStatus } from "~/db/schema";
 import { COUNTRIES } from "~/lib/ppp";
-import { formatCount, formatRevenue } from "~/components/analytics";
+import {
+  formatCount,
+  formatPercent,
+  formatRevenue,
+} from "~/components/analytics";
 import type {
   BucketSize,
+  CompletionMetrics,
+  getCourseBreakdown,
   getEnrollmentSeries,
   getRevenueByCountry,
   getRevenueSeries,
@@ -305,6 +312,104 @@ export function RevenueSplitCard({
             </div>
           ))}
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+export function CompletionCard({
+  enrolledStudents,
+  completionRate,
+  averageCompletion,
+}: CompletionMetrics) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Completion</CardTitle>
+        <CardDescription>
+          All time · {formatCount(enrolledStudents)}{" "}
+          {enrolledStudents === 1 ? "enrollment" : "enrollments"} (not affected
+          by the date range)
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div>
+          <div className="text-2xl font-bold">
+            {formatPercent(completionRate)}
+          </div>
+          <p className="text-sm text-muted-foreground">
+            finished every lesson
+          </p>
+        </div>
+        <div>
+          <div className="text-2xl font-bold">
+            {formatPercent(averageCompletion)}
+          </div>
+          <p className="text-sm text-muted-foreground">
+            average share of lessons completed
+          </p>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+export function CourseBreakdownTable({
+  rows,
+}: {
+  rows: ReturnType<typeof getCourseBreakdown>;
+}) {
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle>Courses</CardTitle>
+        <CardDescription>
+          Revenue and sales for the selected period; students and completion
+          are all time
+        </CardDescription>
+      </CardHeader>
+      <CardContent>
+        <Table>
+          <TableHeader>
+            <TableRow>
+              <TableHead>Course</TableHead>
+              <TableHead className="text-right">Revenue</TableHead>
+              <TableHead className="text-right">Sales</TableHead>
+              <TableHead className="text-right">Students</TableHead>
+              <TableHead className="text-right">Finished</TableHead>
+              <TableHead className="text-right">Avg. completed</TableHead>
+            </TableRow>
+          </TableHeader>
+          <TableBody>
+            {rows.map((row) => (
+              <TableRow key={row.courseId}>
+                <TableCell className="font-medium">
+                  {row.title}
+                  {row.status === CourseStatus.Archived && (
+                    <span className="ml-2 text-xs font-normal text-muted-foreground">
+                      Archived
+                    </span>
+                  )}
+                </TableCell>
+                <TableCell className="text-right">
+                  {formatRevenue(row.revenue)}
+                </TableCell>
+                <TableCell className="text-right">
+                  {formatCount(row.sales)}
+                </TableCell>
+                <TableCell className="text-right">
+                  {formatCount(row.enrolledStudents)}
+                </TableCell>
+                <TableCell className="text-right">
+                  {formatPercent(row.completionRate)}
+                </TableCell>
+                <TableCell className="text-right">
+                  {formatPercent(row.averageCompletion)}
+                </TableCell>
+              </TableRow>
+            ))}
+          </TableBody>
+        </Table>
       </CardContent>
     </Card>
   );

@@ -14,6 +14,11 @@ export function formatCount(value: number): string {
   return value.toLocaleString("en-US");
 }
 
+/** Formats a 0–1 share as "42%"; null (nothing to measure) renders as "—". */
+export function formatPercent(share: number | null): string {
+  return share === null ? "—" : `${Math.round(share * 100)}%`;
+}
+
 export function ChangeIndicator({
   current,
   previous,

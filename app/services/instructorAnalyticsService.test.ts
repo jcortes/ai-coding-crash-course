@@ -13,6 +13,7 @@ vi.mock("~/db", () => ({
 }));
 
 import {
+  getCourseBreakdown,
   getInstructorOverview,
   getEnrollmentSeries,
   getRevenueByCountry,
@@ -116,6 +117,61 @@ function createCourse(
     })
     .returning()
     .get();
+}
+
+// Adds a module per entry in `lessonsPerModule`, each with that many lessons.
+// Returns lesson ids in module-then-lesson order.
+function addLessons(courseId: number, lessonsPerModule: number[]) {
+  const ids: number[] = [];
+  lessonsPerModule.forEach((count, m) => {
+    const mod = testDb
+      .insert(schema.modules)
+      .values({ courseId, title: `Module ${m + 1}`, position: m + 1 })
+      .returning()
+      .get();
+    for (let l = 0; l < count; l++) {
+      const lesson = testDb
+        .insert(schema.lessons)
+        .values({ moduleId: mod.id, title: `Lesson ${l + 1}`, position: l + 1 })
+        .returning()
+        .get();
+      ids.push(lesson.id);
+    }
+  });
+  return ids;
+}
+
+// Enrolls a user (a new student by default) and records their lesson progress.
+function addLearner(opts: {
+  courseId?: number;
+  completed?: number[];
+  inProgress?: number[];
+  userId?: number;
+  enrolledAt?: string;
+}) {
+  const userId = opts.userId ?? createStudent().id;
+  testDb
+    .insert(schema.enrollments)
+    .values({
+      userId,
+      courseId: opts.courseId ?? base.course.id,
+      enrolledAt: opts.enrolledAt ?? daysAgo(100),
+    })
+    .run();
+  const progress = [
+    ...(opts.completed ?? []).map((lessonId) => ({
+      lessonId,
+      status: schema.LessonProgressStatus.Completed,
+    })),
+    ...(opts.inProgress ?? []).map((lessonId) => ({
+      lessonId,
+      status: schema.LessonProgressStatus.InProgress,
+    })),
+  ];
+  for (const row of progress) {
+    testDb.insert(schema.lessonProgress).values({ userId, ...row }).run();
+  }
+  return userId;
 }
 
 describe("instructorAnalyticsService", () => {
@@ -380,6 +436,193 @@ describe("instructorAnalyticsService", () => {
       expect(split.individual.revenue + split.team.revenue).toBe(
         getInstructorOverview(base.instructor.id, "30d", NOW).current.revenue
       );
+    });
+  });
+
+  describe("completion metrics", () => {
+    it("reports the share of enrolled students who completed every lesson", () => {
+      const [a, b, c, d] = addLessons(base.course.id, [2, 2]);
+      addLearner({ completed: [a, b, c, d] });
+      addLearner({ completed: [a, b, c] });
+      addLearner({ completed: [a], inProgress: [b] });
+      addLearner({ completed: [] });
+
+      const { completion } = getInstructorOverview(base.instructor.id, "30d", NOW);
+
+      expect(completion.enrolledStudents).toBe(4);
+      expect(completion.completionRate).toBe(0.25);
+    });
+
+    it("reports the average share of lessons completed per enrolled student", () => {
+      const [a, b, c, d] = addLessons(base.course.id, [2, 2]);
+      addLearner({ completed: [a, b, c, d] }); // 100%
+      addLearner({ completed: [a], inProgress: [b] }); // 25%
+      addLearner({ completed: [] }); // 0%
+      addLearner({ completed: [a, b] }); // 50%
+
+      const { completion } = getInstructorOverview(base.instructor.id, "30d", NOW);
+
+      expect(completion.averageCompletion).toBeCloseTo(0.4375);
+    });
+
+    it("pools students across the instructor's courses", () => {
+      const [a] = addLessons(base.course.id, [1]);
+      const other = createCourse(schema.CourseStatus.Archived);
+      const [x] = addLessons(other.id, [2]);
+      addLearner({ completed: [a] }); // finished, 100%
+      addLearner({ courseId: other.id, completed: [x] }); // 50%
+
+      const { completion } = getInstructorOverview(base.instructor.id, "30d", NOW);
+
+      expect(completion).toEqual({
+        enrolledStudents: 2,
+        completionRate: 0.5,
+        averageCompletion: 0.75,
+      });
+    });
+
+    it("leaves out the course's own instructor and admins", () => {
+      const [a, b] = addLessons(base.course.id, [2]);
+      const admin = createUser(schema.UserRole.Admin);
+      addLearner({ completed: [a, b] }); // student, finished
+      addLearner({ completed: [] }); // student, 0%
+      addLearner({ userId: base.instructor.id, completed: [a, b] });
+      addLearner({ userId: admin.id, completed: [a, b] });
+
+      const { completion } = getInstructorOverview(base.instructor.id, "30d", NOW);
+
+      expect(completion).toEqual({
+        enrolledStudents: 2,
+        completionRate: 0.5,
+        averageCompletion: 0.5,
+      });
+    });
+
+    it("counts another instructor enrolled as a student", () => {
+      const [a] = addLessons(base.course.id, [1]);
+      const otherInstructor = createUser(schema.UserRole.Instructor);
+      addLearner({ userId: otherInstructor.id, completed: [a] });
+
+      const { completion } = getInstructorOverview(base.instructor.id, "30d", NOW);
+
+      expect(completion.enrolledStudents).toBe(1);
+    });
+
+    it("is all-time and ignores the selected range", () => {
+      const [a] = addLessons(base.course.id, [1]);
+      addLearner({ completed: [a], enrolledAt: daysAgo(400) });
+      addLearner({ completed: [], enrolledAt: daysAgo(2) });
+
+      const week = getInstructorOverview(base.instructor.id, "7d", NOW).completion;
+      const all = getInstructorOverview(base.instructor.id, "all", NOW).completion;
+
+      expect(week).toEqual({ enrolledStudents: 2, completionRate: 0.5, averageCompletion: 0.5 });
+      expect(all).toEqual(week);
+    });
+
+    it("excludes draft courses", () => {
+      const draft = createCourse(schema.CourseStatus.Draft);
+      const [a] = addLessons(draft.id, [1]);
+      addLearner({ courseId: draft.id, completed: [a] });
+
+      const { completion } = getInstructorOverview(base.instructor.id, "30d", NOW);
+
+      expect(completion).toEqual({
+        enrolledStudents: 0,
+        completionRate: null,
+        averageCompletion: null,
+      });
+    });
+
+    it("counts students of a course with no lessons as 0% complete", () => {
+      const [a] = addLessons(base.course.id, [1]);
+      const empty = createCourse(schema.CourseStatus.Published);
+      addLearner({ completed: [a] });
+      addLearner({ courseId: empty.id });
+
+      const { completion } = getInstructorOverview(base.instructor.id, "30d", NOW);
+
+      expect(completion).toEqual({
+        enrolledStudents: 2,
+        completionRate: 0.5,
+        averageCompletion: 0.5,
+      });
+    });
+
+    it("ignores progress on lessons from other courses", () => {
+      const [a] = addLessons(base.course.id, [2]);
+      const other = createCourse(schema.CourseStatus.Published);
+      const [x] = addLessons(other.id, [1]);
+      addLearner({ completed: [a, x] });
+
+      const { completion } = getInstructorOverview(base.instructor.id, "30d", NOW);
+
+      expect(completion.averageCompletion).toBe(0.5);
+    });
+  });
+
+  describe("getCourseBreakdown", () => {
+    it("lists one row per published or archived course with range revenue and all-time completion", () => {
+      const [a, b] = addLessons(base.course.id, [2]);
+      const archived = createCourse(schema.CourseStatus.Archived);
+      const [x] = addLessons(archived.id, [1]);
+      const draft = createCourse(schema.CourseStatus.Draft);
+      addPurchase({ amountPaid: 5000, createdAt: daysAgo(2) });
+      addTeamPurchase({ amountPaid: 9000, quantity: 3, createdAt: daysAgo(5) });
+      addPurchase({ amountPaid: 4444, createdAt: daysAgo(60) }); // outside 30d
+      addPurchase({ courseId: draft.id, amountPaid: 1000, createdAt: daysAgo(1) });
+      addLearner({ completed: [a, b] });
+      addLearner({ completed: [a] });
+      addLearner({ completed: [] });
+      addLearner({ userId: base.instructor.id, completed: [a, b] });
+      addLearner({ courseId: archived.id, completed: [x] });
+
+      const rows = getCourseBreakdown(base.instructor.id, "30d", NOW);
+
+      expect(rows).toEqual([
+        {
+          courseId: base.course.id,
+          title: base.course.title,
+          status: schema.CourseStatus.Published,
+          revenue: 14000,
+          sales: 2,
+          enrolledStudents: 3,
+          completionRate: 1 / 3,
+          averageCompletion: 0.5,
+        },
+        {
+          courseId: archived.id,
+          title: archived.title,
+          status: schema.CourseStatus.Archived,
+          revenue: 0,
+          sales: 0,
+          enrolledStudents: 1,
+          completionRate: 1,
+          averageCompletion: 1,
+        },
+      ]);
+    });
+
+    it("shows a course with no sales or students as zeros", () => {
+      expect(getCourseBreakdown(base.instructor.id, "7d", NOW)).toEqual([
+        expect.objectContaining({
+          courseId: base.course.id,
+          revenue: 0,
+          sales: 0,
+          enrolledStudents: 0,
+          completionRate: null,
+          averageCompletion: null,
+        }),
+      ]);
+    });
+
+    it("only lists the instructor's own courses", () => {
+      const stranger = createUser(schema.UserRole.Instructor);
+      createCourse(schema.CourseStatus.Published, stranger.id);
+
+      const rows = getCourseBreakdown(base.instructor.id, "all", NOW);
+
+      expect(rows.map((r) => r.courseId)).toEqual([base.course.id]);
     });
   });
 

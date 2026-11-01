@@ -1,4 +1,4 @@
-import { and, desc, eq, gte, inArray, lt, sql, type SQL } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lt, ne, sql, type SQL } from "drizzle-orm";
 import type { SQLiteColumn } from "drizzle-orm/sqlite-core";
 import { db } from "~/db";
 import {
@@ -6,8 +6,13 @@ import {
   courses,
   CourseStatus,
   enrollments,
+  LessonProgressStatus,
+  lessonProgress,
+  lessons,
+  modules,
   purchases,
   UserRole,
+  users,
 } from "~/db/schema";
 import { getCountryTierInfo } from "~/lib/ppp";
 import { getUserById } from "./userService";
@@ -167,6 +172,101 @@ function hasCountedCourses(instructorId: number) {
   return row !== undefined;
 }
 
+// ─── Completion (always all-time) ───
+
+export interface CompletionMetrics {
+  /**
+   * Enrollments that count (not the course's instructor, not admins). Pooled
+   * across courses, a student in two courses counts twice.
+   */
+  enrolledStudents: number;
+  /** Share (0–1) of those students who completed every lesson; null if none. */
+  completionRate: number | null;
+  /** Mean share (0–1) of lessons completed per student; null if none. */
+  averageCompletion: number | null;
+}
+
+interface CompletionTotals {
+  students: number;
+  finished: number;
+  progressSum: number;
+}
+
+const NO_COMPLETION: CompletionTotals = {
+  students: 0,
+  finished: 0,
+  progressSum: 0,
+};
+
+function toCompletionMetrics(totals: CompletionTotals): CompletionMetrics {
+  const { students, finished, progressSum } = totals;
+  return {
+    enrolledStudents: students,
+    completionRate: students > 0 ? finished / students : null,
+    averageCompletion: students > 0 ? progressSum / students : null,
+  };
+}
+
+// Completion totals per counted course of the instructor, ignoring any date
+// range. The course's own instructor and admins are left out. A course with no
+// lessons has nothing to finish, so its students count as 0% complete.
+function getCompletionTotalsByCourse(instructorId: number) {
+  const totalLessons = sql<number>`(
+    select count(*) from ${lessons}
+    inner join ${modules} on ${lessons.moduleId} = ${modules.id}
+    where ${modules.courseId} = ${enrollments.courseId}
+  )`;
+  const completedLessons = sql<number>`(
+    select count(distinct ${lessonProgress.lessonId}) from ${lessonProgress}
+    inner join ${lessons} on ${lessonProgress.lessonId} = ${lessons.id}
+    inner join ${modules} on ${lessons.moduleId} = ${modules.id}
+    where ${modules.courseId} = ${enrollments.courseId}
+      and ${lessonProgress.userId} = ${enrollments.userId}
+      and ${lessonProgress.status} = ${LessonProgressStatus.Completed}
+  )`;
+
+  const perEnrollment = db
+    .select({
+      courseId: enrollments.courseId,
+      total: totalLessons.as("total_lessons"),
+      done: completedLessons.as("completed_lessons"),
+    })
+    .from(enrollments)
+    .innerJoin(courses, eq(enrollments.courseId, courses.id))
+    .innerJoin(users, eq(enrollments.userId, users.id))
+    .where(
+      and(
+        countedCoursesOf(instructorId),
+        ne(enrollments.userId, courses.instructorId),
+        ne(users.role, UserRole.Admin)
+      )
+    )
+    .as("per_enrollment");
+
+  return db
+    .select({
+      courseId: perEnrollment.courseId,
+      students: sql<number>`count(*)`,
+      finished: sql<number>`sum(case when ${perEnrollment.total} > 0 and ${perEnrollment.done} >= ${perEnrollment.total} then 1 else 0 end)`,
+      progressSum: sql<number>`sum(case when ${perEnrollment.total} > 0 then ${perEnrollment.done} * 1.0 / ${perEnrollment.total} else 0 end)`,
+    })
+    .from(perEnrollment)
+    .groupBy(perEnrollment.courseId)
+    .all();
+}
+
+function getCompletionMetrics(instructorId: number): CompletionMetrics {
+  const totals = getCompletionTotalsByCourse(instructorId).reduce<CompletionTotals>(
+    (sum, row) => ({
+      students: sum.students + row.students,
+      finished: sum.finished + row.finished,
+      progressSum: sum.progressSum + row.progressSum,
+    }),
+    NO_COMPLETION
+  );
+  return toCompletionMetrics(totals);
+}
+
 export function getInstructorOverview(
   instructorId: number,
   range: AnalyticsRange,
@@ -179,6 +279,7 @@ export function getInstructorOverview(
     previous: windows.previous
       ? getPeriodTotals(instructorId, windows.previous)
       : null,
+    completion: getCompletionMetrics(instructorId),
   };
 }
 
@@ -438,4 +539,63 @@ export function getRevenueSplit(
   };
 
   return { individual: splitPart(false), team: splitPart(true) };
+}
+
+// ─── Per-course breakdown ───
+
+// One row per published or archived course of the instructor. Revenue and
+// sales follow the range; completion numbers are all-time. Sorted by revenue,
+// highest first, then by title.
+export function getCourseBreakdown(
+  instructorId: number,
+  range: AnalyticsRange,
+  now: Date = new Date()
+) {
+  const { current } = getWindows(range, now);
+
+  const courseRows = db
+    .select({ id: courses.id, title: courses.title, status: courses.status })
+    .from(courses)
+    .where(countedCoursesOf(instructorId))
+    .all();
+
+  const salesByCourse = new Map(
+    db
+      .select({
+        courseId: purchases.courseId,
+        revenue: sql<number>`coalesce(sum(${purchases.amountPaid}), 0)`,
+        sales: sql<number>`count(${purchases.id})`,
+      })
+      .from(purchases)
+      .innerJoin(courses, eq(purchases.courseId, courses.id))
+      .where(
+        and(
+          countedCoursesOf(instructorId),
+          withinWindow(purchases.createdAt, current)
+        )
+      )
+      .groupBy(purchases.courseId)
+      .all()
+      .map((row) => [row.courseId, row])
+  );
+
+  const completionByCourse = new Map(
+    getCompletionTotalsByCourse(instructorId).map((row) => [row.courseId, row])
+  );
+
+  return courseRows
+    .map((course) => {
+      const sales = salesByCourse.get(course.id);
+      return {
+        courseId: course.id,
+        title: course.title,
+        status: course.status,
+        revenue: sales?.revenue ?? 0,
+        sales: sales?.sales ?? 0,
+        ...toCompletionMetrics(
+          completionByCourse.get(course.id) ?? NO_COMPLETION
+        ),
+      };
+    })
+    .sort((a, b) => b.revenue - a.revenue || a.title.localeCompare(b.title));
 }

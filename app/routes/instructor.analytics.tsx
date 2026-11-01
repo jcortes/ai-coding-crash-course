@@ -3,6 +3,7 @@ import type { Route } from "./+types/instructor.analytics";
 import { getCurrentUserId } from "~/lib/session";
 import {
   ANALYTICS_RANGES,
+  getCourseBreakdown,
   getEnrollmentSeries,
   getInstructorOverview,
   getRevenueByCountry,
@@ -14,6 +15,8 @@ import {
 } from "~/services/instructorAnalyticsService";
 import { StatCard, formatCount, formatRevenue } from "~/components/analytics";
 import {
+  CompletionCard,
+  CourseBreakdownTable,
   EnrollmentChart,
   RevenueByCountryTable,
   RevenueChart,
@@ -93,6 +96,7 @@ export async function loader({ request }: Route.LoaderArgs) {
     enrollmentSeries: getEnrollmentSeries(instructor.id, range),
     revenueByCountry: getRevenueByCountry(instructor.id, range),
     revenueSplit: getRevenueSplit(instructor.id, range),
+    courseBreakdown: getCourseBreakdown(instructor.id, range),
     instructor,
     // Only carried in links when an admin is viewing someone else.
     instructorIdParam: isViewingOther ? instructor.id : null,
@@ -127,6 +131,7 @@ export default function InstructorAnalytics({
     enrollmentSeries,
     revenueByCountry,
     revenueSplit,
+    courseBreakdown,
     instructor,
     instructorIdParam,
   } = loaderData;
@@ -242,6 +247,13 @@ export default function InstructorAnalytics({
           <div className="grid gap-4 lg:grid-cols-2">
             <RevenueChart {...revenueSeries} />
             <EnrollmentChart {...enrollmentSeries} />
+          </div>
+
+          <div className="grid gap-4 lg:grid-cols-3">
+            <div className="lg:col-span-2">
+              <CourseBreakdownTable rows={courseBreakdown} />
+            </div>
+            <CompletionCard {...overview.completion} />
           </div>
 
           <div className="grid gap-4 lg:grid-cols-3">
