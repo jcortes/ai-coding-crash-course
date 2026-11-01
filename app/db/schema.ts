@@ -34,6 +34,8 @@ export enum QuestionType {
 
 export enum BadgeType {
   CourseCompleted = "course_completed",
+  ModuleMastered = "module_mastered",
+  Streak = "streak",
 }
 
 export enum TeamMemberRole {
@@ -299,7 +301,9 @@ export const lessonComments = sqliteTable("lesson_comments", {
 
 // Badges are permanent: they survive progress resets, new content and the
 // deletion or renaming of their course. That is why courseId has no foreign
-// key and the course title is copied into the row.
+// key and the course title is copied into the row. Module badges also carry
+// their courseId so the instructor view can list them per course; streak
+// badges are global and use only level.
 export const userBadges = sqliteTable(
   "user_badges",
   {
@@ -322,5 +326,11 @@ export const userBadges = sqliteTable(
     uniqueIndex("user_badges_course_completed_unique")
       .on(table.userId, table.courseId)
       .where(sql`${table.type} = 'course_completed'`),
+    uniqueIndex("user_badges_module_mastered_unique")
+      .on(table.userId, table.moduleId)
+      .where(sql`${table.type} = 'module_mastered'`),
+    uniqueIndex("user_badges_streak_unique")
+      .on(table.userId, table.level)
+      .where(sql`${table.type} = 'streak'`),
   ]
 );

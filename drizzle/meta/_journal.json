@@ -64,6 +64,13 @@
       "when": 1793547047796,
       "tag": "0008_bouncy_virginia_dare",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "6",
+      "when": 1793548078833,
+      "tag": "0009_yellow_doomsday",
+      "breakpoints": true
     }
   ]
 }

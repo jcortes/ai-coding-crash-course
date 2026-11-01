@@ -43,7 +43,7 @@ import {
   type CommentViewer,
   type LessonCommentView,
 } from "~/services/commentService";
-import { LessonProgressStatus } from "~/db/schema";
+import { type BadgeType, LessonProgressStatus } from "~/db/schema";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent } from "~/components/ui/card";
 import { Textarea } from "~/components/ui/textarea";
@@ -420,10 +420,7 @@ export async function action({ params, request }: Route.ActionArgs) {
 
   if (intent === "mark-complete") {
     markLessonComplete(currentUserId, lessonId);
-    const newBadges = evaluateBadgesForLesson(currentUserId, lessonId).map(
-      (b) => ({ id: b.id, type: b.type, title: b.title })
-    );
-    return { success: true, newBadges };
+    return { success: true, newBadges: newBadgesFor(currentUserId, lessonId) };
   }
 
   if (typeof intent === "string" && COMMENT_INTENTS.includes(intent)) {
@@ -453,10 +450,23 @@ export async function action({ params, request }: Route.ActionArgs) {
       throw data("Failed to score quiz", { status: 500 });
     }
 
-    return { quizResult: result };
+    return {
+      quizResult: result,
+      newBadges: newBadgesFor(currentUserId, lessonId),
+    };
   }
 
   throw data("Invalid action", { status: 400 });
+}
+
+// Evaluates badges after the user's progress on this lesson changed and
+// returns the newly awarded ones for the page to announce.
+function newBadgesFor(userId: number, lessonId: number) {
+  return evaluateBadgesForLesson(userId, lessonId).map((b) => ({
+    id: b.id,
+    type: b.type,
+    title: b.title,
+  }));
 }
 
 function commentError(message: string, status: number) {
@@ -551,6 +561,19 @@ function useAutoplay() {
   return [enabled, toggle] as const;
 }
 
+type NewBadge = { id: number; type: BadgeType; title: string };
+
+function useAnnounceBadges(newBadges: NewBadge[] | undefined) {
+  const announced = useRef<NewBadge[] | undefined>(undefined);
+  useEffect(() => {
+    if (!newBadges || announced.current === newBadges) return;
+    announced.current = newBadges;
+    for (const badge of newBadges) {
+      toast.success(`Badge unlocked: ${badgeLabel(badge)}`);
+    }
+  }, [newBadges]);
+}
+
 export default function LessonViewer({ loaderData }: Route.ComponentProps) {
   const {
     course,
@@ -584,18 +607,12 @@ export default function LessonViewer({ loaderData }: Route.ComponentProps) {
     fetcher.formData?.get("intent") === "mark-complete";
 
   const justCompleted = fetcher.data?.success;
-  const newBadges = fetcher.data?.newBadges;
 
-  // Announce badges earned by this completion. The Toaster lives in the app
-  // layout, so the toast survives the navigation to the next lesson below.
-  const announcedBadges = useRef<typeof newBadges>(undefined);
-  useEffect(() => {
-    if (!newBadges || announcedBadges.current === newBadges) return;
-    announcedBadges.current = newBadges;
-    for (const badge of newBadges) {
-      toast.success(`Badge unlocked: ${badgeLabel(badge)}`);
-    }
-  }, [newBadges]);
+  // Announce badges earned by completing the lesson or passing its quiz. The
+  // Toaster lives in the app layout, so the toast survives the navigation to
+  // the next lesson below.
+  useAnnounceBadges(fetcher.data?.newBadges);
+  useAnnounceBadges(quizFetcher.data?.newBadges);
 
   const isCompleted =
     lessonStatus === LessonProgressStatus.Completed || justCompleted;

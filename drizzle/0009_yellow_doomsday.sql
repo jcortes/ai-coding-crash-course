@@ -1,0 +1,2 @@
+CREATE UNIQUE INDEX `user_badges_module_mastered_unique` ON `user_badges` (`user_id`,`module_id`) WHERE "user_badges"."type" = 'module_mastered';--> statement-breakpoint
+CREATE UNIQUE INDEX `user_badges_streak_unique` ON `user_badges` (`user_id`,`level`) WHERE "user_badges"."type" = 'streak';
