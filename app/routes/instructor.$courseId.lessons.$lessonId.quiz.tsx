@@ -9,11 +9,9 @@ import {
   getQuizByLessonId,
   getQuizWithQuestions,
   createQuiz,
-  updateQuiz,
   deleteQuiz,
   createQuestion,
   createOption,
-  deleteQuestion,
 } from "~/services/quizService";
 import { getCurrentUserId } from "~/lib/session";
 import { getUserById } from "~/services/userService";
