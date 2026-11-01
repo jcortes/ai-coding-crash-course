@@ -18,20 +18,18 @@ import {
 } from "~/db/schema";
 import { getCountryTierInfo } from "~/lib/ppp";
 import { getUserById } from "./userService";
+import type { AnalyticsRange } from "~/lib/analytics-range";
 
 // ─── Instructor Analytics Service ───
 // Live SQL aggregates for the instructor analytics dashboard.
 // Uses positional parameters (project convention).
 
-export type AnalyticsRange = "7d" | "30d" | "90d" | "all";
-
-export const ANALYTICS_RANGES: AnalyticsRange[] = ["7d", "30d", "90d", "all"];
-
-export const DEFAULT_ANALYTICS_RANGE: AnalyticsRange = "30d";
-
-export function parseAnalyticsRange(value: string | null): AnalyticsRange {
-  return ANALYTICS_RANGES.find((r) => r === value) ?? DEFAULT_ANALYTICS_RANGE;
-}
+export {
+  ANALYTICS_RANGES,
+  DEFAULT_ANALYTICS_RANGE,
+  parseAnalyticsRange,
+  type AnalyticsRange,
+} from "~/lib/analytics-range";
 
 export type AnalyticsAccess =
   | { ok: true; instructor: { id: number; name: string } }

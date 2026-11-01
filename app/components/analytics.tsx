@@ -10,11 +10,8 @@ import {
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 import { cn } from "~/lib/utils";
-import {
-  ANALYTICS_RANGES,
-  type AnalyticsRange,
-  type getInstructorOverview,
-} from "~/services/instructorAnalyticsService";
+import { ANALYTICS_RANGES, type AnalyticsRange } from "~/lib/analytics-range";
+import type { getInstructorOverview } from "~/services/instructorAnalyticsService";
 
 /** Formats USD cents as "$1,234.56" (0 renders as "$0.00", not "Free"). */
 export function formatRevenue(cents: number): string {
