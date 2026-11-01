@@ -9,7 +9,7 @@ import { getCurrentUserId } from "~/lib/session";
 import { UserRole } from "~/db/schema";
 import { Card, CardContent } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
-import { AlertTriangle, ArrowLeft, Users, Award } from "lucide-react";
+import { AlertTriangle, ArrowLeft, Users, Award, BarChart3 } from "lucide-react";
 import { data, isRouteErrorResponse } from "react-router";
 import { db } from "~/db";
 import { modules, lessons } from "~/db/schema";
@@ -192,11 +192,19 @@ export default function InstructorStudentRoster({
         Back to Course Editor
       </Link>
 
-      <div className="mb-8">
-        <h1 className="text-3xl font-bold">Student Roster</h1>
-        <p className="mt-1 text-muted-foreground">
-          Enrolled students for {course.title}
-        </p>
+      <div className="mb-8 flex flex-wrap items-end justify-between gap-4">
+        <div>
+          <h1 className="text-3xl font-bold">Student Roster</h1>
+          <p className="mt-1 text-muted-foreground">
+            Enrolled students for {course.title}
+          </p>
+        </div>
+        <Link to={`/instructor/${course.id}/analytics`}>
+          <Button variant="outline">
+            <BarChart3 className="mr-2 size-4" />
+            Course analytics
+          </Button>
+        </Link>
       </div>
 
       <div className="mb-4 flex items-center gap-4 text-sm text-muted-foreground">

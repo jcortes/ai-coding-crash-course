@@ -8,7 +8,9 @@ import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
 import { AlertTriangle, BookOpen, CheckCircle2, GraduationCap, PlayCircle } from "lucide-react";
 import { CourseImage } from "~/components/course-image";
-import { data, isRouteErrorResponse } from "react-router";
+import { data, isRouteErrorResponse, redirect } from "react-router";
+import { getUserById } from "~/services/userService";
+import { UserRole } from "~/db/schema";
 
 export function meta() {
   return [
@@ -24,6 +26,10 @@ export async function loader({ request }: Route.LoaderArgs) {
     throw data("Select a user from the DevUI panel to view your dashboard.", {
       status: 401,
     });
+  }
+
+  if (getUserById(currentUserId)?.role === UserRole.Instructor) {
+    throw redirect("/instructor/analytics");
   }
 
   const enrolledCourses = getUserEnrolledCourses(currentUserId);

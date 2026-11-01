@@ -7,10 +7,15 @@ import { getUserById } from "~/services/userService";
 import { Card, CardContent, CardFooter, CardHeader } from "~/components/ui/card";
 import { Button } from "~/components/ui/button";
 import { Skeleton } from "~/components/ui/skeleton";
-import { AlertTriangle, BookOpen, GraduationCap, Plus, Users } from "lucide-react";
+import { AlertTriangle, BarChart3, BookOpen, ChevronRight, GraduationCap, Plus, Users } from "lucide-react";
 import { CourseImage } from "~/components/course-image";
 import { data, isRouteErrorResponse } from "react-router";
 import { CourseStatus, UserRole } from "~/db/schema";
+import {
+  DEFAULT_ANALYTICS_RANGE,
+  getInstructorOverview,
+} from "~/services/instructorAnalyticsService";
+import { formatCount, formatRevenue } from "~/components/analytics";
 
 export function meta() {
   return [
@@ -56,7 +61,12 @@ export async function loader({ request }: Route.LoaderArgs) {
     };
   });
 
-  return { courses: coursesWithStats };
+  const overview = getInstructorOverview(currentUserId, DEFAULT_ANALYTICS_RANGE);
+
+  return {
+    courses: coursesWithStats,
+    headline: overview.hasCourses ? overview.current : null,
+  };
 }
 
 function statusBadge(status: string) {
@@ -118,10 +128,19 @@ export function HydrateFallback() {
   );
 }
 
+function HeadlineStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div>
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="text-lg font-semibold">{value}</div>
+    </div>
+  );
+}
+
 export default function InstructorDashboard({
   loaderData,
 }: Route.ComponentProps) {
-  const { courses } = loaderData;
+  const { courses, headline } = loaderData;
 
   return (
     <div className="mx-auto max-w-7xl p-6 lg:p-8">
@@ -148,6 +167,28 @@ export default function InstructorDashboard({
           </Button>
         </Link>
       </div>
+
+      {headline && (
+        <Link
+          to="/instructor/analytics"
+          className="group mb-8 flex flex-wrap items-center gap-x-8 gap-y-2 rounded-lg border border-border bg-muted/30 px-5 py-4 transition-colors hover:bg-muted/60"
+        >
+          <div className="flex items-center gap-2 text-sm font-medium">
+            <BarChart3 className="size-4 text-muted-foreground" />
+            Last 30 days
+          </div>
+          <HeadlineStat label="Revenue" value={formatRevenue(headline.revenue)} />
+          <HeadlineStat label="Sales" value={formatCount(headline.sales)} />
+          <HeadlineStat
+            label="New enrollments"
+            value={formatCount(headline.newEnrollments)}
+          />
+          <span className="ml-auto flex items-center gap-1 text-sm text-muted-foreground group-hover:text-foreground">
+            View analytics
+            <ChevronRight className="size-4" />
+          </span>
+        </Link>
+      )}
 
       {courses.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 text-center">

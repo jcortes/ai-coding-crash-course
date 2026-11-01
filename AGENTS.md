@@ -6,3 +6,9 @@
 - **Tests** are service-level. Each test file uses `vi.mock("~/db", ...)` to swap in `createTestDb()`, an in-memory DB built from the `drizzle/` migrations, and fills it with `seedBaseData()` from `app/test/setup.ts`. Copy the pattern from an existing `*.test.ts`.
 - **Auth** is a cookie session that stores `userId` (`app/lib/session.ts`). There are no passwords. In dev, users and the country (which drives PPP pricing in `app/lib/ppp.ts`) are switched through `app/components/dev-ui.tsx` and `api/switch-user` / `api/set-dev-country`.
 
+
+## Agent skills
+
+### Issue tracker
+
+Issues and specs are tracked in GitHub Issues for `jcortes/ai-coding-crash-course` via the `gh` CLI. See `docs/agents/issue-tracker.md`.

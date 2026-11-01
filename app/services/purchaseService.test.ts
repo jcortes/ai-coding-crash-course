@@ -30,7 +30,13 @@ describe("purchaseService", () => {
 
   describe("createPurchase", () => {
     it("creates a purchase record", () => {
-      const purchase = createPurchase(base.user.id, base.course.id, 4999, "US");
+      const purchase = createPurchase(
+        base.user.id,
+        base.course.id,
+        4999,
+        "US",
+        4999
+      );
       expect(purchase).toBeDefined();
       expect(purchase.userId).toBe(base.user.id);
       expect(purchase.courseId).toBe(base.course.id);
@@ -39,12 +45,37 @@ describe("purchaseService", () => {
     });
 
     it("creates a purchase with null country", () => {
-      const purchase = createPurchase(base.user.id, base.course.id, 4999, null);
+      const purchase = createPurchase(
+        base.user.id,
+        base.course.id,
+        4999,
+        null,
+        4999
+      );
       expect(purchase.country).toBeNull();
     });
 
+    it("stores the list price and a quantity of 1 for an individual purchase", () => {
+      const purchase = createPurchase(
+        base.user.id,
+        base.course.id,
+        2500,
+        "IN",
+        4999
+      );
+      expect(purchase.amountPaid).toBe(2500);
+      expect(purchase.listPrice).toBe(4999);
+      expect(purchase.quantity).toBe(1);
+    });
+
     it("stores discounted price correctly", () => {
-      const purchase = createPurchase(base.user.id, base.course.id, 2500, "IN");
+      const purchase = createPurchase(
+        base.user.id,
+        base.course.id,
+        2500,
+        "IN",
+        4999
+      );
       expect(purchase.amountPaid).toBe(2500);
       expect(purchase.country).toBe("IN");
     });
@@ -54,7 +85,7 @@ describe("purchaseService", () => {
 
   describe("findPurchase", () => {
     it("returns purchase for user+course", () => {
-      createPurchase(base.user.id, base.course.id, 4999, "US");
+      createPurchase(base.user.id, base.course.id, 4999, "US", 4999);
       const found = findPurchase(base.user.id, base.course.id);
       expect(found).toBeDefined();
       expect(found!.amountPaid).toBe(4999);
@@ -69,7 +100,7 @@ describe("purchaseService", () => {
 
   describe("getPurchasesByUser", () => {
     it("returns all purchases for a user", () => {
-      createPurchase(base.user.id, base.course.id, 4999, "US");
+      createPurchase(base.user.id, base.course.id, 4999, "US", 4999);
       const purchases = getPurchasesByUser(base.user.id);
       expect(purchases).toHaveLength(1);
     });
@@ -83,8 +114,8 @@ describe("purchaseService", () => {
 
   describe("getPurchasesByCourse", () => {
     it("returns all purchases for a course", () => {
-      createPurchase(base.user.id, base.course.id, 4999, "US");
-      createPurchase(base.instructor.id, base.course.id, 4999, "GB");
+      createPurchase(base.user.id, base.course.id, 4999, "US", 4999);
+      createPurchase(base.instructor.id, base.course.id, 4999, "GB", 4999);
       const purchases = getPurchasesByCourse(base.course.id);
       expect(purchases).toHaveLength(2);
     });
@@ -99,6 +130,7 @@ describe("purchaseService", () => {
         base.course.id,
         10000,
         "US",
+        10000,
         3
       );
 
@@ -110,12 +142,28 @@ describe("purchaseService", () => {
       expect(result.coupons).toHaveLength(3);
     });
 
+    it("stores the per-seat list price and the seat count", () => {
+      const result = createTeamPurchase(
+        base.user.id,
+        base.course.id,
+        7500,
+        "BR",
+        4999,
+        3
+      );
+
+      expect(result.purchase.amountPaid).toBe(7500);
+      expect(result.purchase.listPrice).toBe(4999);
+      expect(result.purchase.quantity).toBe(3);
+    });
+
     it("generates coupons linked to the correct team and purchase", () => {
       const result = createTeamPurchase(
         base.user.id,
         base.course.id,
         10000,
         "US",
+        10000,
         2
       );
 
@@ -133,6 +181,7 @@ describe("purchaseService", () => {
         base.course.id,
         10000,
         "US",
+        10000,
         5
       );
 
@@ -146,6 +195,7 @@ describe("purchaseService", () => {
         base.course.id,
         10000,
         "US",
+        10000,
         2
       );
 
@@ -168,6 +218,7 @@ describe("purchaseService", () => {
         course2.id,
         5000,
         "US",
+        10000,
         3
       );
 
@@ -176,7 +227,7 @@ describe("purchaseService", () => {
     });
 
     it("makes the purchaser a team admin", () => {
-      createTeamPurchase(base.user.id, base.course.id, 10000, "US", 1);
+      createTeamPurchase(base.user.id, base.course.id, 10000, "US", 10000, 1);
 
       const membership = testDb
         .select()

@@ -146,7 +146,7 @@ export async function action({ params, request }: Route.ActionArgs) {
     if (isUserEnrolled(currentUserId, course.id)) {
       throw redirect(`/courses/${slug}`);
     }
-    createPurchase(currentUserId, course.id, pppPrice, country);
+    createPurchase(currentUserId, course.id, pppPrice, country, course.price);
     enrollUser(currentUserId, course.id, false, false);
     throw redirect(`/courses/${slug}/welcome`);
   }
@@ -154,7 +154,14 @@ export async function action({ params, request }: Route.ActionArgs) {
   // Team purchase — user does NOT get enrolled themselves
   const { quantity } = parsed.data;
   const totalPrice = pppPrice * quantity;
-  createTeamPurchase(currentUserId, course.id, totalPrice, country, quantity);
+  createTeamPurchase(
+    currentUserId,
+    course.id,
+    totalPrice,
+    country,
+    course.price,
+    quantity
+  );
   throw redirect(`/team`);
 }
 

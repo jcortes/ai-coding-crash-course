@@ -20,6 +20,7 @@ export default [
     ),
     route("instructor", "routes/instructor.tsx"),
     route("instructor/new", "routes/instructor.new.tsx"),
+    route("instructor/analytics", "routes/instructor.analytics.tsx"),
     route("instructor/:courseId", "routes/instructor.$courseId.tsx"),
     route(
       "instructor/:courseId/lessons/:lessonId",
@@ -37,6 +38,10 @@ export default [
       "instructor/:courseId/students",
       "routes/instructor.$courseId.students.tsx"
     ),
+    route(
+      "instructor/:courseId/analytics",
+      "routes/instructor.$courseId.analytics.tsx"
+    ),
     route("admin/users", "routes/admin.users.tsx"),
     route("admin/courses", "routes/admin.courses.tsx"),
     route("admin/categories", "routes/admin.categories.tsx"),
@@ -50,4 +55,8 @@ export default [
   route("api/logout", "routes/api.logout.ts"),
   route("api/video-tracking", "routes/api.video-tracking.ts"),
   route("api/set-dev-country", "routes/api.set-dev-country.ts"),
+  route(
+    ".well-known/appspecific/com.chrome.devtools.json",
+    "routes/well-known.chrome-devtools.ts"
+  ),
 ] satisfies RouteConfig;

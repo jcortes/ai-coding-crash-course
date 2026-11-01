@@ -204,6 +204,10 @@ export const purchases = sqliteTable("purchases", {
     .notNull()
     .references(() => courses.id),
   amountPaid: integer("amount_paid").notNull(),
+  // Per-seat list price in cents at the time of purchase (before PPP).
+  listPrice: integer("list_price").notNull().default(0),
+  // Number of seats bought (1 for individual purchases).
+  quantity: integer("quantity").notNull().default(1),
   country: text("country"),
   createdAt: text("created_at")
     .notNull()
